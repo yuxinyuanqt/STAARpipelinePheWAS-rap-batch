@@ -97,7 +97,19 @@ if(test.type == "Null") {
   cat("\tTime variable in random slope longitudinal models:", random_time_slope, "\n")
 }
 
-if(user_cores > 1) Sys.setenv(MKL_NUM_THREADS = 1)
+if(user_cores > 1) 
+{
+  if (!requireNamespace("RhpcBLASctl", quietly = TRUE)) 
+  {
+    install.packages("RhpcBLASctl", repos = "http://cran.us.r-project.org")
+  }
+  suppressMessages(library(RhpcBLASctl))
+  blas_set_num_threads(1)
+  omp_set_num_threads(1)
+  Sys.setenv(MKL_NUM_THREADS = 1)
+  Sys.setenv(OMP_NUM_THREADS = 1)
+  print(parallel::mclapply(1:10, function(x) system("echo $OMP_NUM_THREADS", intern = TRUE), mc.cores = 10))
+}
 suppressMessages(library(gdsfmt))
 suppressMessages(library(SeqArray))
 suppressMessages(library(SeqVarTools))
@@ -105,6 +117,7 @@ suppressMessages(library(STAAR))
 suppressMessages(library(MultiSTAAR))
 suppressMessages(library(SCANG))
 suppressMessages(library(STAARpipeline))
+suppressMessages(library(STAARpipelinePheWAS))
 suppressMessages(library(parallel))
 
 if(nullobj.file == "NO_NULL_OBJ") {

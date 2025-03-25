@@ -198,39 +198,6 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
   
   seqSetFilter(genofile,variant.id=variant.is.in,sample.id=phenotype.id)
   
-  ## genotype id
-  id.genotype <- seqGetData(genofile,"sample.id")
-  # id.genotype.match <- rep(0,length(id.genotype))
-  
-  id.genotype.merge <- data.frame(id.genotype,index=seq(1,length(id.genotype)))
-  phenotype.id.merge <- data.frame(phenotype.id)
-  phenotype.id.merge <- dplyr::left_join(phenotype.id.merge,id.genotype.merge,by=c("phenotype.id"="id.genotype"))
-  id.genotype.match <- phenotype.id.merge$index
-  
-  ## Genotype
-  Geno <- NULL
-  if(length(seqGetData(genofile, "variant.id"))<rv_num_cutoff_max_prefilter)
-  {
-    Geno <- seqGetData(genofile, "$dosage")
-    Geno <- Geno[id.genotype.match,,drop=FALSE]
-  }
-  
-  ## impute missing
-  if(!is.null(dim(Geno)))
-  {
-    if(dim(Geno)[2]>0)
-    {
-      if(geno_missing_imputation=="mean")
-      {
-        Geno <- matrix_flip_mean(Geno)$Geno
-      }
-      if(geno_missing_imputation=="minor")
-      {
-        Geno <- matrix_flip_minor(Geno)$Geno
-      }
-    }
-  }
-  
   ## Annotation
   Anno.Int.PHRED.sub <- NULL
   Anno.Int.PHRED.sub.name <- NULL
@@ -266,83 +233,125 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
     }
   }
   
+  if(length(variant.is.in)>=1)
+  {
+    ## get AF, Missing rate
+    AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
+    REF_AF <- AF_AC_Missing$af
+    Missing_rate <- AF_AC_Missing$miss
+    variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
+    seqResetFilter(genofile)
+    
+    Genotype_sp <- Genotype_sp_extraction(genofile,variant.id=variant.is.in,
+                                          sample.id=phenotype.id,
+                                          REF_AF=REF_AF,variant_maf_cutoff_filter=variant_maf_cutoff_filter,
+                                          Missing_rate=Missing_rate,
+                                          rv_num_cutoff_max_prefilter=rv_num_cutoff_max_prefilter,
+                                          annotation_phred=Anno.Int.PHRED.sub)
+    Geno <- Genotype_sp$Geno
+    Anno.Int.PHRED.sub <- Genotype_sp$annotation_phred
+    rm(Genotype_sp)
+    gc()
+  } else
+  {
+    Geno <- NULL
+  }
+  
   results_list_downstream <- rep(list(c()), length(obj_nullmodel_list))
   phenotype.id.merge <- data.frame(phenotype.id, index = seq(1, length(phenotype.id)))
   
-  for (num in 1:length(obj_nullmodel_list))
+  if(!is.null(Geno) & inherits(Geno, "dgCMatrix"))
   {
-    id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
-    id.phenotype.num.merge <- data.frame(id.phenotype.num)
-    id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
-    phenotype.id.match <- id.phenotype.num.merge$index
-    
-    Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
-    
-    ## number of traits in analysis
-    n_pheno <- obj_nullmodel_list[[num]]$n.pheno
-    
-    ## SPA status
-    if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
+    for (num in 1:length(obj_nullmodel_list))
     {
-      use_SPA <- obj_nullmodel_list[[num]]$use_SPA
-    }else
-    {
-      use_SPA <- FALSE
-    }
-    
-    pvalues <- 0
-    if(n_pheno == 1)
-    {
-      if(!use_SPA)
-      {
-        try(pvalues <- STAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-      }else
-      {
-        try(pvalues <- STAAR_Binary_SPA(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
-      }
-    }else
-    {
-      try(pvalues <- MultiSTAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-    }
-    
-    results_downstream <- c()
-    if(inherits(pvalues, "list"))
-    {
-      results_temp <- rep(NA,4)
-      results_temp[3] <- "downstream"
-      results_temp[2] <- chr
-      results_temp[1] <- as.character(gene_name)
-      results_temp[4] <- pvalues$num_variant
+      id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
+      id.phenotype.num.merge <- data.frame(id.phenotype.num)
+      id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
+      phenotype.id.match <- id.phenotype.num.merge$index
+      samplesize.num <- length(phenotype.id.match)
       
-      if(!use_SPA)
+      ## Extract the genotype matrix and variant information of the current trait
+      Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
+      MAC.in <- Matrix::colSums(Geno.num,na.rm = TRUE)
+      Missing_num.in <- Missing_num.sp(Geno.num)
+      MAF.in <- MAC.in/(2*(samplesize.num-Missing_num.in))
+      
+      if (geno_missing_imputation == "mean")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
-                          pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
-      }else
+        Geno.num <- na.replace.sp(Geno.num,m=2*MAF.in)
+      }
+      if (geno_missing_imputation == "minor")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        Geno.num <- na.replace.sp(Geno.num,is_NA_to_Zero=TRUE)
+        MAF.in <- MAC.in/(2*samplesize.num)
       }
       
-      results_downstream <- rbind(results_downstream,results_temp)
-    }
-    
-    if(!is.null(results_downstream))
-    {
-      if(!use_SPA)
+      ## number of traits in analysis
+      n_pheno <- obj_nullmodel_list[[num]]$n.pheno
+      
+      ## SPA status
+      if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
       {
-        colnames(results_downstream) <- colnames(results_downstream, do.NULL = FALSE, prefix = "col")
-        colnames(results_downstream)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results_downstream)[(dim(results_downstream)[2]-1):dim(results_downstream)[2]] <- c("ACAT-O","STAAR-O")
+        use_SPA <- obj_nullmodel_list[[num]]$use_SPA
       }else
       {
-        colnames(results_downstream) <- colnames(results_downstream, do.NULL = FALSE, prefix = "col")
-        colnames(results_downstream)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results_downstream)[dim(results_downstream)[2]] <- c("STAAR-B")
+        use_SPA <- FALSE
       }
       
-      results_list_downstream[[num]] <- results_downstream
+      pvalues <- 0
+      if(n_pheno == 1)
+      {
+        if(!use_SPA)
+        {
+          try(pvalues <- STAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+        }else
+        {
+          try(pvalues <- STAAR_Binary_SPA_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
+        }
+      }else
+      {
+        try(pvalues <- MultiSTAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+      }
+      
+      results_downstream <- c()
+      if(inherits(pvalues, "list"))
+      {
+        results_temp <- rep(NA,4)
+        results_temp[3] <- "downstream"
+        results_temp[2] <- chr
+        results_temp[1] <- as.character(gene_name)
+        results_temp[4] <- pvalues$num_variant
+        
+        if(!use_SPA)
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
+                            pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
+        }else
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        }
+        
+        results_downstream <- rbind(results_downstream,results_temp)
+      }
+      
+      if(!is.null(results_downstream))
+      {
+        if(!use_SPA)
+        {
+          colnames(results_downstream) <- colnames(results_downstream, do.NULL = FALSE, prefix = "col")
+          colnames(results_downstream)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results_downstream)[(dim(results_downstream)[2]-1):dim(results_downstream)[2]] <- c("ACAT-O","STAAR-O")
+        }else
+        {
+          colnames(results_downstream) <- colnames(results_downstream, do.NULL = FALSE, prefix = "col")
+          colnames(results_downstream)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results_downstream)[dim(results_downstream)[2]] <- c("STAAR-B")
+        }
+        
+        results_list_downstream[[num]] <- results_downstream
+      }
     }
   }
   seqResetFilter(genofile)
@@ -384,39 +393,6 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
   
   seqSetFilter(genofile,variant.id=variant.is.in,sample.id=phenotype.id)
   
-  ## genotype id
-  id.genotype <- seqGetData(genofile,"sample.id")
-  # id.genotype.match <- rep(0,length(id.genotype))
-  
-  id.genotype.merge <- data.frame(id.genotype,index=seq(1,length(id.genotype)))
-  phenotype.id.merge <- data.frame(phenotype.id)
-  phenotype.id.merge <- dplyr::left_join(phenotype.id.merge,id.genotype.merge,by=c("phenotype.id"="id.genotype"))
-  id.genotype.match <- phenotype.id.merge$index
-  
-  ## Genotype
-  Geno <- NULL
-  if(length(seqGetData(genofile, "variant.id"))<rv_num_cutoff_max_prefilter)
-  {
-    Geno <- seqGetData(genofile, "$dosage")
-    Geno <- Geno[id.genotype.match,,drop=FALSE]
-  }
-  
-  ## impute missing
-  if(!is.null(dim(Geno)))
-  {
-    if(dim(Geno)[2]>0)
-    {
-      if(geno_missing_imputation=="mean")
-      {
-        Geno <- matrix_flip_mean(Geno)$Geno
-      }
-      if(geno_missing_imputation=="minor")
-      {
-        Geno <- matrix_flip_minor(Geno)$Geno
-      }
-    }
-  }
-  
   ## Annotation
   Anno.Int.PHRED.sub <- NULL
   Anno.Int.PHRED.sub.name <- NULL
@@ -452,84 +428,125 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
     }
   }
   
+  if(length(variant.is.in)>=1)
+  {
+    ## get AF, Missing rate
+    AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
+    REF_AF <- AF_AC_Missing$af
+    Missing_rate <- AF_AC_Missing$miss
+    variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
+    seqResetFilter(genofile)
+    
+    Genotype_sp <- Genotype_sp_extraction(genofile,variant.id=variant.is.in,
+                                          sample.id=phenotype.id,
+                                          REF_AF=REF_AF,variant_maf_cutoff_filter=variant_maf_cutoff_filter,
+                                          Missing_rate=Missing_rate,
+                                          rv_num_cutoff_max_prefilter=rv_num_cutoff_max_prefilter,
+                                          annotation_phred=Anno.Int.PHRED.sub)
+    Geno <- Genotype_sp$Geno
+    Anno.Int.PHRED.sub <- Genotype_sp$annotation_phred
+    rm(Genotype_sp)
+    gc()
+  } else
+  {
+    Geno <- NULL
+  }
   
   results_list_upstream <- rep(list(c()), length(obj_nullmodel_list))
   phenotype.id.merge <- data.frame(phenotype.id, index = seq(1, length(phenotype.id)))
   
-  for (num in 1:length(obj_nullmodel_list))
+  if(!is.null(Geno) & inherits(Geno, "dgCMatrix"))
   {
-    id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
-    id.phenotype.num.merge <- data.frame(id.phenotype.num)
-    id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
-    phenotype.id.match <- id.phenotype.num.merge$index
-    
-    Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
-    
-    ## number of traits in analysis
-    n_pheno <- obj_nullmodel_list[[num]]$n.pheno
-    
-    ## SPA status
-    if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
+    for (num in 1:length(obj_nullmodel_list))
     {
-      use_SPA <- obj_nullmodel_list[[num]]$use_SPA
-    }else
-    {
-      use_SPA <- FALSE
-    }
-    
-    pvalues <- 0
-    if(n_pheno == 1)
-    {
-      if(!use_SPA)
-      {
-        try(pvalues <- STAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-      }else
-      {
-        try(pvalues <- STAAR_Binary_SPA(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
-      }
-    }else
-    {
-      try(pvalues <- MultiSTAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-    }
-    
-    results_upstream <- c()
-    if(inherits(pvalues, "list"))
-    {
-      results_temp <- rep(NA,4)
-      results_temp[3] <- "upstream"
-      results_temp[2] <- chr
-      results_temp[1] <- as.character(gene_name)
-      results_temp[4] <- pvalues$num_variant
+      id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
+      id.phenotype.num.merge <- data.frame(id.phenotype.num)
+      id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
+      phenotype.id.match <- id.phenotype.num.merge$index
+      samplesize.num <- length(phenotype.id.match)
       
-      if(!use_SPA)
+      ## Extract the genotype matrix and variant information of the current trait
+      Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
+      MAC.in <- Matrix::colSums(Geno.num,na.rm = TRUE)
+      Missing_num.in <- Missing_num.sp(Geno.num)
+      MAF.in <- MAC.in/(2*(samplesize.num-Missing_num.in))
+      
+      if (geno_missing_imputation == "mean")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
-                          pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
-      }else
+        Geno.num <- na.replace.sp(Geno.num,m=2*MAF.in)
+      }
+      if (geno_missing_imputation == "minor")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        Geno.num <- na.replace.sp(Geno.num,is_NA_to_Zero=TRUE)
+        MAF.in <- MAC.in/(2*samplesize.num)
       }
       
-      results_upstream <- rbind(results_upstream,results_temp)
-    }
-    
-    if(!is.null(results_upstream))
-    {
-      if(!use_SPA)
+      ## number of traits in analysis
+      n_pheno <- obj_nullmodel_list[[num]]$n.pheno
+      
+      ## SPA status
+      if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
       {
-        colnames(results_upstream) <- colnames(results_upstream, do.NULL = FALSE, prefix = "col")
-        colnames(results_upstream)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results_upstream)[(dim(results_upstream)[2]-1):dim(results_upstream)[2]] <- c("ACAT-O","STAAR-O")
+        use_SPA <- obj_nullmodel_list[[num]]$use_SPA
       }else
       {
-        colnames(results_upstream) <- colnames(results_upstream, do.NULL = FALSE, prefix = "col")
-        colnames(results_upstream)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results_upstream)[dim(results_upstream)[2]] <- c("STAAR-B")
+        use_SPA <- FALSE
       }
       
-      results_list_upstream[[num]] <- results_upstream
+      pvalues <- 0
+      if(n_pheno == 1)
+      {
+        if(!use_SPA)
+        {
+          try(pvalues <- STAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+        }else
+        {
+          try(pvalues <- STAAR_Binary_SPA_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
+        }
+      }else
+      {
+        try(pvalues <- MultiSTAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+      }
+      
+      results_upstream <- c()
+      if(inherits(pvalues, "list"))
+      {
+        results_temp <- rep(NA,4)
+        results_temp[3] <- "upstream"
+        results_temp[2] <- chr
+        results_temp[1] <- as.character(gene_name)
+        results_temp[4] <- pvalues$num_variant
+        
+        if(!use_SPA)
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
+                            pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
+        }else
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        }
+        
+        results_upstream <- rbind(results_upstream,results_temp)
+      }
+      
+      if(!is.null(results_upstream))
+      {
+        if(!use_SPA)
+        {
+          colnames(results_upstream) <- colnames(results_upstream, do.NULL = FALSE, prefix = "col")
+          colnames(results_upstream)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results_upstream)[(dim(results_upstream)[2]-1):dim(results_upstream)[2]] <- c("ACAT-O","STAAR-O")
+        }else
+        {
+          colnames(results_upstream) <- colnames(results_upstream, do.NULL = FALSE, prefix = "col")
+          colnames(results_upstream)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results_upstream)[dim(results_upstream)[2]] <- c("STAAR-B")
+        }
+        
+        results_list_upstream[[num]] <- results_upstream
+      }
     }
   }
   
@@ -570,39 +587,6 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
   
   seqSetFilter(genofile,variant.id=variant.is.in,sample.id=phenotype.id)
   
-  ## genotype id
-  id.genotype <- seqGetData(genofile,"sample.id")
-  # id.genotype.match <- rep(0,length(id.genotype))
-  
-  id.genotype.merge <- data.frame(id.genotype,index=seq(1,length(id.genotype)))
-  phenotype.id.merge <- data.frame(phenotype.id)
-  phenotype.id.merge <- dplyr::left_join(phenotype.id.merge,id.genotype.merge,by=c("phenotype.id"="id.genotype"))
-  id.genotype.match <- phenotype.id.merge$index
-  
-  ## Genotype
-  Geno <- NULL
-  if(length(seqGetData(genofile, "variant.id"))<rv_num_cutoff_max_prefilter)
-  {
-    Geno <- seqGetData(genofile, "$dosage")
-    Geno <- Geno[id.genotype.match,,drop=FALSE]
-  }
-  
-  ## impute missing
-  if(!is.null(dim(Geno)))
-  {
-    if(dim(Geno)[2]>0)
-    {
-      if(geno_missing_imputation=="mean")
-      {
-        Geno <- matrix_flip_mean(Geno)$Geno
-      }
-      if(geno_missing_imputation=="minor")
-      {
-        Geno <- matrix_flip_minor(Geno)$Geno
-      }
-    }
-  }
-  
   ## Annotation
   Anno.Int.PHRED.sub <- NULL
   Anno.Int.PHRED.sub.name <- NULL
@@ -638,83 +622,125 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
     }
   }
   
+  if(length(variant.is.in)>=1)
+  {
+    ## get AF, Missing rate
+    AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
+    REF_AF <- AF_AC_Missing$af
+    Missing_rate <- AF_AC_Missing$miss
+    variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
+    seqResetFilter(genofile)
+    
+    Genotype_sp <- Genotype_sp_extraction(genofile,variant.id=variant.is.in,
+                                          sample.id=phenotype.id,
+                                          REF_AF=REF_AF,variant_maf_cutoff_filter=variant_maf_cutoff_filter,
+                                          Missing_rate=Missing_rate,
+                                          rv_num_cutoff_max_prefilter=rv_num_cutoff_max_prefilter,
+                                          annotation_phred=Anno.Int.PHRED.sub)
+    Geno <- Genotype_sp$Geno
+    Anno.Int.PHRED.sub <- Genotype_sp$annotation_phred
+    rm(Genotype_sp)
+    gc()
+  } else
+  {
+    Geno <- NULL
+  }
+  
   results_list_UTR <- rep(list(c()), length(obj_nullmodel_list))
   phenotype.id.merge <- data.frame(phenotype.id, index = seq(1, length(phenotype.id)))
   
-  for (num in 1:length(obj_nullmodel_list))
+  if(!is.null(Geno) & inherits(Geno, "dgCMatrix"))
   {
-    id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
-    id.phenotype.num.merge <- data.frame(id.phenotype.num)
-    id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
-    phenotype.id.match <- id.phenotype.num.merge$index
-    
-    Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
-    
-    ## number of traits in analysis
-    n_pheno <- obj_nullmodel_list[[num]]$n.pheno
-    
-    ## SPA status
-    if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
+    for (num in 1:length(obj_nullmodel_list))
     {
-      use_SPA <- obj_nullmodel_list[[num]]$use_SPA
-    }else
-    {
-      use_SPA <- FALSE
-    }
-    
-    pvalues <- 0
-    if(n_pheno == 1)
-    {
-      if(!use_SPA)
-      {
-        try(pvalues <- STAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-      }else
-      {
-        try(pvalues <- STAAR_Binary_SPA(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
-      }
-    }else
-    {
-      try(pvalues <- MultiSTAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-    }
-    
-    results_UTR <- c()
-    if(inherits(pvalues, "list"))
-    {
-      results_temp <- rep(NA,4)
-      results_temp[3] <- "UTR"
-      results_temp[2] <- chr
-      results_temp[1] <- as.character(gene_name)
-      results_temp[4] <- pvalues$num_variant
+      id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
+      id.phenotype.num.merge <- data.frame(id.phenotype.num)
+      id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
+      phenotype.id.match <- id.phenotype.num.merge$index
+      samplesize.num <- length(phenotype.id.match)
       
-      if(!use_SPA)
+      ## Extract the genotype matrix and variant information of the current trait
+      Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
+      MAC.in <- Matrix::colSums(Geno.num,na.rm = TRUE)
+      Missing_num.in <- Missing_num.sp(Geno.num)
+      MAF.in <- MAC.in/(2*(samplesize.num-Missing_num.in))
+      
+      if (geno_missing_imputation == "mean")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
-                          pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
-      }else
+        Geno.num <- na.replace.sp(Geno.num,m=2*MAF.in)
+      }
+      if (geno_missing_imputation == "minor")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        Geno.num <- na.replace.sp(Geno.num,is_NA_to_Zero=TRUE)
+        MAF.in <- MAC.in/(2*samplesize.num)
       }
       
-      results_UTR <- rbind(results_UTR,results_temp)
-    }
-    
-    if(!is.null(results_UTR))
-    {
-      if(!use_SPA)
+      ## number of traits in analysis
+      n_pheno <- obj_nullmodel_list[[num]]$n.pheno
+      
+      ## SPA status
+      if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
       {
-        colnames(results_UTR) <- colnames(results_UTR, do.NULL = FALSE, prefix = "col")
-        colnames(results_UTR)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results_UTR)[(dim(results_UTR)[2]-1):dim(results_UTR)[2]] <- c("ACAT-O","STAAR-O")
+        use_SPA <- obj_nullmodel_list[[num]]$use_SPA
       }else
       {
-        colnames(results_UTR) <- colnames(results_UTR, do.NULL = FALSE, prefix = "col")
-        colnames(results_UTR)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results_UTR)[dim(results_UTR)[2]] <- c("STAAR-B")
+        use_SPA <- FALSE
       }
       
-      results_list_UTR[[num]] <- results_UTR
+      pvalues <- 0
+      if(n_pheno == 1)
+      {
+        if(!use_SPA)
+        {
+          try(pvalues <- STAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+        }else
+        {
+          try(pvalues <- STAAR_Binary_SPA_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
+        }
+      }else
+      {
+        try(pvalues <- MultiSTAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+      }
+      
+      results_UTR <- c()
+      if(inherits(pvalues, "list"))
+      {
+        results_temp <- rep(NA,4)
+        results_temp[3] <- "UTR"
+        results_temp[2] <- chr
+        results_temp[1] <- as.character(gene_name)
+        results_temp[4] <- pvalues$num_variant
+        
+        if(!use_SPA)
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
+                            pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
+        }else
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        }
+        
+        results_UTR <- rbind(results_UTR,results_temp)
+      }
+      
+      if(!is.null(results_UTR))
+      {
+        if(!use_SPA)
+        {
+          colnames(results_UTR) <- colnames(results_UTR, do.NULL = FALSE, prefix = "col")
+          colnames(results_UTR)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results_UTR)[(dim(results_UTR)[2]-1):dim(results_UTR)[2]] <- c("ACAT-O","STAAR-O")
+        }else
+        {
+          colnames(results_UTR) <- colnames(results_UTR, do.NULL = FALSE, prefix = "col")
+          colnames(results_UTR)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results_UTR)[dim(results_UTR)[2]] <- c("STAAR-B")
+        }
+        
+        results_list_UTR[[num]] <- results_UTR
+      }
     }
   }
   
@@ -728,39 +754,6 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
   variant.is.in <- variant.id.SNV.PromCAGE[is.in]
 
   seqSetFilter(genofile,variant.id=variant.is.in,sample.id=phenotype.id)
-
-  ## genotype id
-  id.genotype <- seqGetData(genofile,"sample.id")
-  # id.genotype.match <- rep(0,length(id.genotype))
-  
-  id.genotype.merge <- data.frame(id.genotype,index=seq(1,length(id.genotype)))
-  phenotype.id.merge <- data.frame(phenotype.id)
-  phenotype.id.merge <- dplyr::left_join(phenotype.id.merge,id.genotype.merge,by=c("phenotype.id"="id.genotype"))
-  id.genotype.match <- phenotype.id.merge$index
-  
-  ## Genotype
-  Geno <- NULL
-  if(length(seqGetData(genofile, "variant.id"))<rv_num_cutoff_max_prefilter)
-  {
-    Geno <- seqGetData(genofile, "$dosage")
-    Geno <- Geno[id.genotype.match,,drop=FALSE]
-  }
-  
-  ## impute missing
-  if(!is.null(dim(Geno)))
-  {
-    if(dim(Geno)[2]>0)
-    {
-      if(geno_missing_imputation=="mean")
-      {
-        Geno <- matrix_flip_mean(Geno)$Geno
-      }
-      if(geno_missing_imputation=="minor")
-      {
-        Geno <- matrix_flip_minor(Geno)$Geno
-      }
-    }
-  }
   
   ## Annotation
   Anno.Int.PHRED.sub <- NULL
@@ -797,83 +790,125 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
     }
   }
   
+  if(length(variant.is.in)>=1)
+  {
+    ## get AF, Missing rate
+    AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
+    REF_AF <- AF_AC_Missing$af
+    Missing_rate <- AF_AC_Missing$miss
+    variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
+    seqResetFilter(genofile)
+    
+    Genotype_sp <- Genotype_sp_extraction(genofile,variant.id=variant.is.in,
+                                          sample.id=phenotype.id,
+                                          REF_AF=REF_AF,variant_maf_cutoff_filter=variant_maf_cutoff_filter,
+                                          Missing_rate=Missing_rate,
+                                          rv_num_cutoff_max_prefilter=rv_num_cutoff_max_prefilter,
+                                          annotation_phred=Anno.Int.PHRED.sub)
+    Geno <- Genotype_sp$Geno
+    Anno.Int.PHRED.sub <- Genotype_sp$annotation_phred
+    rm(Genotype_sp)
+    gc()
+  } else
+  {
+    Geno <- NULL
+  }
+  
   results_list_promoter_CAGE <- rep(list(c()), length(obj_nullmodel_list))
   phenotype.id.merge <- data.frame(phenotype.id, index = seq(1, length(phenotype.id)))
   
-  for (num in 1:length(obj_nullmodel_list))
+  if(!is.null(Geno) & inherits(Geno, "dgCMatrix"))
   {
-    id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
-    id.phenotype.num.merge <- data.frame(id.phenotype.num)
-    id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
-    phenotype.id.match <- id.phenotype.num.merge$index
-    
-    Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
-    
-    ## number of traits in analysis
-    n_pheno <- obj_nullmodel_list[[num]]$n.pheno
-    
-    ## SPA status
-    if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
+    for (num in 1:length(obj_nullmodel_list))
     {
-      use_SPA <- obj_nullmodel_list[[num]]$use_SPA
-    }else
-    {
-      use_SPA <- FALSE
-    }
-    
-    pvalues <- 0
-    if(n_pheno == 1)
-    {
-      if(!use_SPA)
-      {
-        try(pvalues <- STAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-      }else
-      {
-        try(pvalues <- STAAR_Binary_SPA(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
-      }
-    }else
-    {
-      try(pvalues <- MultiSTAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-    }
-    
-    results_promoter_CAGE <- c()
-    if(inherits(pvalues, "list"))
-    {
-      results_temp <- dfPromCAGEVarGene.SNV[1, 1:4]
-      results_temp[3] <- "promoter_CAGE"
-      results_temp[2] <- chr
-      results_temp[1] <- as.character(gene_name)
-      results_temp[4] <- pvalues$num_variant
+      id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
+      id.phenotype.num.merge <- data.frame(id.phenotype.num)
+      id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
+      phenotype.id.match <- id.phenotype.num.merge$index
+      samplesize.num <- length(phenotype.id.match)
       
-      if(!use_SPA)
+      ## Extract the genotype matrix and variant information of the current trait
+      Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
+      MAC.in <- Matrix::colSums(Geno.num,na.rm = TRUE)
+      Missing_num.in <- Missing_num.sp(Geno.num)
+      MAF.in <- MAC.in/(2*(samplesize.num-Missing_num.in))
+      
+      if (geno_missing_imputation == "mean")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
-                          pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
-      }else
+        Geno.num <- na.replace.sp(Geno.num,m=2*MAF.in)
+      }
+      if (geno_missing_imputation == "minor")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        Geno.num <- na.replace.sp(Geno.num,is_NA_to_Zero=TRUE)
+        MAF.in <- MAC.in/(2*samplesize.num)
       }
       
-      results_promoter_CAGE <- rbind(results_promoter_CAGE,results_temp)
-    }
-    
-    if(!is.null(results_promoter_CAGE))
-    {
-      if(!use_SPA)
+      ## number of traits in analysis
+      n_pheno <- obj_nullmodel_list[[num]]$n.pheno
+      
+      ## SPA status
+      if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
       {
-        colnames(results_promoter_CAGE) <- colnames(results_promoter_CAGE, do.NULL = FALSE, prefix = "col")
-        colnames(results_promoter_CAGE)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results_promoter_CAGE)[(dim(results_promoter_CAGE)[2]-1):dim(results_promoter_CAGE)[2]] <- c("ACAT-O","STAAR-O")
+        use_SPA <- obj_nullmodel_list[[num]]$use_SPA
       }else
       {
-        colnames(results_promoter_CAGE) <- colnames(results_promoter_CAGE, do.NULL = FALSE, prefix = "col")
-        colnames(results_promoter_CAGE)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results_promoter_CAGE)[dim(results_promoter_CAGE)[2]] <- c("STAAR-B")
+        use_SPA <- FALSE
       }
       
-      results_list_promoter_CAGE[[num]] <- results_promoter_CAGE
+      pvalues <- 0
+      if(n_pheno == 1)
+      {
+        if(!use_SPA)
+        {
+          try(pvalues <- STAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+        }else
+        {
+          try(pvalues <- STAAR_Binary_SPA_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
+        }
+      }else
+      {
+        try(pvalues <- MultiSTAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+      }
+      
+      results_promoter_CAGE <- c()
+      if(inherits(pvalues, "list"))
+      {
+        results_temp <- dfPromCAGEVarGene.SNV[1, 1:4]
+        results_temp[3] <- "promoter_CAGE"
+        results_temp[2] <- chr
+        results_temp[1] <- as.character(gene_name)
+        results_temp[4] <- pvalues$num_variant
+        
+        if(!use_SPA)
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
+                            pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
+        }else
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        }
+        
+        results_promoter_CAGE <- rbind(results_promoter_CAGE,results_temp)
+      }
+      
+      if(!is.null(results_promoter_CAGE))
+      {
+        if(!use_SPA)
+        {
+          colnames(results_promoter_CAGE) <- colnames(results_promoter_CAGE, do.NULL = FALSE, prefix = "col")
+          colnames(results_promoter_CAGE)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results_promoter_CAGE)[(dim(results_promoter_CAGE)[2]-1):dim(results_promoter_CAGE)[2]] <- c("ACAT-O","STAAR-O")
+        }else
+        {
+          colnames(results_promoter_CAGE) <- colnames(results_promoter_CAGE, do.NULL = FALSE, prefix = "col")
+          colnames(results_promoter_CAGE)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results_promoter_CAGE)[dim(results_promoter_CAGE)[2]] <- c("STAAR-B")
+        }
+        
+        results_list_promoter_CAGE[[num]] <- results_promoter_CAGE
+      }
     }
   }
   
@@ -889,39 +924,6 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
 
   seqSetFilter(genofile,variant.id=variant.is.in,sample.id=phenotype.id)
 
-  ## genotype id
-  id.genotype <- seqGetData(genofile,"sample.id")
-  # id.genotype.match <- rep(0,length(id.genotype))
-  
-  id.genotype.merge <- data.frame(id.genotype,index=seq(1,length(id.genotype)))
-  phenotype.id.merge <- data.frame(phenotype.id)
-  phenotype.id.merge <- dplyr::left_join(phenotype.id.merge,id.genotype.merge,by=c("phenotype.id"="id.genotype"))
-  id.genotype.match <- phenotype.id.merge$index
-  
-  ## Genotype
-  Geno <- NULL
-  if(length(seqGetData(genofile, "variant.id"))<rv_num_cutoff_max_prefilter)
-  {
-    Geno <- seqGetData(genofile, "$dosage")
-    Geno <- Geno[id.genotype.match,,drop=FALSE]
-  }
-  
-  ## impute missing
-  if(!is.null(dim(Geno)))
-  {
-    if(dim(Geno)[2]>0)
-    {
-      if(geno_missing_imputation=="mean")
-      {
-        Geno <- matrix_flip_mean(Geno)$Geno
-      }
-      if(geno_missing_imputation=="minor")
-      {
-        Geno <- matrix_flip_minor(Geno)$Geno
-      }
-    }
-  }
-  
   ## Annotation
   Anno.Int.PHRED.sub <- NULL
   Anno.Int.PHRED.sub.name <- NULL
@@ -957,83 +959,125 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
     }
   }
   
+  if(length(variant.is.in)>=1)
+  {
+    ## get AF, Missing rate
+    AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
+    REF_AF <- AF_AC_Missing$af
+    Missing_rate <- AF_AC_Missing$miss
+    variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
+    seqResetFilter(genofile)
+    
+    Genotype_sp <- Genotype_sp_extraction(genofile,variant.id=variant.is.in,
+                                          sample.id=phenotype.id,
+                                          REF_AF=REF_AF,variant_maf_cutoff_filter=variant_maf_cutoff_filter,
+                                          Missing_rate=Missing_rate,
+                                          rv_num_cutoff_max_prefilter=rv_num_cutoff_max_prefilter,
+                                          annotation_phred=Anno.Int.PHRED.sub)
+    Geno <- Genotype_sp$Geno
+    Anno.Int.PHRED.sub <- Genotype_sp$annotation_phred
+    rm(Genotype_sp)
+    gc()
+  } else
+  {
+    Geno <- NULL
+  }
+  
   results_list_promoter_DHS <- rep(list(c()), length(obj_nullmodel_list))
   phenotype.id.merge <- data.frame(phenotype.id, index = seq(1, length(phenotype.id)))
   
-  for (num in 1:length(obj_nullmodel_list))
+  if(!is.null(Geno) & inherits(Geno, "dgCMatrix"))
   {
-    id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
-    id.phenotype.num.merge <- data.frame(id.phenotype.num)
-    id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
-    phenotype.id.match <- id.phenotype.num.merge$index
-    
-    Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
-    
-    ## number of traits in analysis
-    n_pheno <- obj_nullmodel_list[[num]]$n.pheno
-    
-    ## SPA status
-    if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
+    for (num in 1:length(obj_nullmodel_list))
     {
-      use_SPA <- obj_nullmodel_list[[num]]$use_SPA
-    }else
-    {
-      use_SPA <- FALSE
-    }
-    
-    pvalues <- 0
-    if(n_pheno == 1)
-    {
-      if(!use_SPA)
-      {
-        try(pvalues <- STAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-      }else
-      {
-        try(pvalues <- STAAR_Binary_SPA(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
-      }
-    }else
-    {
-      try(pvalues <- MultiSTAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-    }
-    
-    results_promoter_DHS <- c()
-    if(inherits(pvalues, "list"))
-    {
-      results_temp <- dfPromrOCRsVarGene.SNV[1, 1:4]
-      results_temp[3] <- "promoter_DHS"
-      results_temp[2] <- chr
-      results_temp[1] <- as.character(gene_name)
-      results_temp[4] <- pvalues$num_variant
+      id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
+      id.phenotype.num.merge <- data.frame(id.phenotype.num)
+      id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
+      phenotype.id.match <- id.phenotype.num.merge$index
+      samplesize.num <- length(phenotype.id.match)
       
-      if(!use_SPA)
+      ## Extract the genotype matrix and variant information of the current trait
+      Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
+      MAC.in <- Matrix::colSums(Geno.num,na.rm = TRUE)
+      Missing_num.in <- Missing_num.sp(Geno.num)
+      MAF.in <- MAC.in/(2*(samplesize.num-Missing_num.in))
+      
+      if (geno_missing_imputation == "mean")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
-                          pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
-      }else
+        Geno.num <- na.replace.sp(Geno.num,m=2*MAF.in)
+      }
+      if (geno_missing_imputation == "minor")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        Geno.num <- na.replace.sp(Geno.num,is_NA_to_Zero=TRUE)
+        MAF.in <- MAC.in/(2*samplesize.num)
       }
       
-      results_promoter_DHS <- rbind(results_promoter_DHS,results_temp)
-    }
-    
-    if(!is.null(results_promoter_DHS))
-    {
-      if(!use_SPA)
+      ## number of traits in analysis
+      n_pheno <- obj_nullmodel_list[[num]]$n.pheno
+      
+      ## SPA status
+      if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
       {
-        colnames(results_promoter_DHS) <- colnames(results_promoter_DHS, do.NULL = FALSE, prefix = "col")
-        colnames(results_promoter_DHS)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results_promoter_DHS)[(dim(results_promoter_DHS)[2]-1):dim(results_promoter_DHS)[2]] <- c("ACAT-O","STAAR-O")
+        use_SPA <- obj_nullmodel_list[[num]]$use_SPA
       }else
       {
-        colnames(results_promoter_DHS) <- colnames(results_promoter_DHS, do.NULL = FALSE, prefix = "col")
-        colnames(results_promoter_DHS)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results_promoter_DHS)[dim(results_promoter_DHS)[2]] <- c("STAAR-B")
+        use_SPA <- FALSE
       }
       
-      results_list_promoter_DHS[[num]] <- results_promoter_DHS
+      pvalues <- 0
+      if(n_pheno == 1)
+      {
+        if(!use_SPA)
+        {
+          try(pvalues <- STAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+        }else
+        {
+          try(pvalues <- STAAR_Binary_SPA_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
+        }
+      }else
+      {
+        try(pvalues <- MultiSTAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+      }
+      
+      results_promoter_DHS <- c()
+      if(inherits(pvalues, "list"))
+      {
+        results_temp <- dfPromrOCRsVarGene.SNV[1, 1:4]
+        results_temp[3] <- "promoter_DHS"
+        results_temp[2] <- chr
+        results_temp[1] <- as.character(gene_name)
+        results_temp[4] <- pvalues$num_variant
+        
+        if(!use_SPA)
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
+                            pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
+        }else
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        }
+        
+        results_promoter_DHS <- rbind(results_promoter_DHS,results_temp)
+      }
+      
+      if(!is.null(results_promoter_DHS))
+      {
+        if(!use_SPA)
+        {
+          colnames(results_promoter_DHS) <- colnames(results_promoter_DHS, do.NULL = FALSE, prefix = "col")
+          colnames(results_promoter_DHS)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results_promoter_DHS)[(dim(results_promoter_DHS)[2]-1):dim(results_promoter_DHS)[2]] <- c("ACAT-O","STAAR-O")
+        }else
+        {
+          colnames(results_promoter_DHS) <- colnames(results_promoter_DHS, do.NULL = FALSE, prefix = "col")
+          colnames(results_promoter_DHS)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results_promoter_DHS)[dim(results_promoter_DHS)[2]] <- c("STAAR-B")
+        }
+        
+        results_list_promoter_DHS[[num]] <- results_promoter_DHS
+      }
     }
   }
   
@@ -1047,39 +1091,6 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
   variant.is.in <- variant.id.SNV.HancerCAGE[is.in]
 
   seqSetFilter(genofile,variant.id=variant.is.in,sample.id=phenotype.id)
-
-  ## genotype id
-  id.genotype <- seqGetData(genofile,"sample.id")
-  # id.genotype.match <- rep(0,length(id.genotype))
-  
-  id.genotype.merge <- data.frame(id.genotype,index=seq(1,length(id.genotype)))
-  phenotype.id.merge <- data.frame(phenotype.id)
-  phenotype.id.merge <- dplyr::left_join(phenotype.id.merge,id.genotype.merge,by=c("phenotype.id"="id.genotype"))
-  id.genotype.match <- phenotype.id.merge$index
-  
-  ## Genotype
-  Geno <- NULL
-  if(length(seqGetData(genofile, "variant.id"))<rv_num_cutoff_max_prefilter)
-  {
-    Geno <- seqGetData(genofile, "$dosage")
-    Geno <- Geno[id.genotype.match,,drop=FALSE]
-  }
-  
-  ## impute missing
-  if(!is.null(dim(Geno)))
-  {
-    if(dim(Geno)[2]>0)
-    {
-      if(geno_missing_imputation=="mean")
-      {
-        Geno <- matrix_flip_mean(Geno)$Geno
-      }
-      if(geno_missing_imputation=="minor")
-      {
-        Geno <- matrix_flip_minor(Geno)$Geno
-      }
-    }
-  }
   
   ## Annotation
   Anno.Int.PHRED.sub <- NULL
@@ -1116,83 +1127,125 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
     }
   }
   
+  if(length(variant.is.in)>=1)
+  {
+    ## get AF, Missing rate
+    AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
+    REF_AF <- AF_AC_Missing$af
+    Missing_rate <- AF_AC_Missing$miss
+    variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
+    seqResetFilter(genofile)
+    
+    Genotype_sp <- Genotype_sp_extraction(genofile,variant.id=variant.is.in,
+                                          sample.id=phenotype.id,
+                                          REF_AF=REF_AF,variant_maf_cutoff_filter=variant_maf_cutoff_filter,
+                                          Missing_rate=Missing_rate,
+                                          rv_num_cutoff_max_prefilter=rv_num_cutoff_max_prefilter,
+                                          annotation_phred=Anno.Int.PHRED.sub)
+    Geno <- Genotype_sp$Geno
+    Anno.Int.PHRED.sub <- Genotype_sp$annotation_phred
+    rm(Genotype_sp)
+    gc()
+  } else
+  {
+    Geno <- NULL
+  }
+  
   results_list_enhancer_CAGE <- rep(list(c()), length(obj_nullmodel_list))
   phenotype.id.merge <- data.frame(phenotype.id, index = seq(1, length(phenotype.id)))
   
-  for (num in 1:length(obj_nullmodel_list))
+  if(!is.null(Geno) & inherits(Geno, "dgCMatrix"))
   {
-    id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
-    id.phenotype.num.merge <- data.frame(id.phenotype.num)
-    id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
-    phenotype.id.match <- id.phenotype.num.merge$index
-    
-    Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
-    
-    ## number of traits in analysis
-    n_pheno <- obj_nullmodel_list[[num]]$n.pheno
-    
-    ## SPA status
-    if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
+    for (num in 1:length(obj_nullmodel_list))
     {
-      use_SPA <- obj_nullmodel_list[[num]]$use_SPA
-    }else
-    {
-      use_SPA <- FALSE
-    }
-    
-    pvalues <- 0
-    if(n_pheno == 1)
-    {
-      if(!use_SPA)
-      {
-        try(pvalues <- STAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-      }else
-      {
-        try(pvalues <- STAAR_Binary_SPA(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
-      }
-    }else
-    {
-      try(pvalues <- MultiSTAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-    }
-    
-    results_enhancer_CAGE <- c()
-    if(inherits(pvalues, "list"))
-    {
-      results_temp <- dfHancerCAGEVarGene.SNV[1, 1:4]
-      results_temp[3] <- "enhancer_CAGE"
-      results_temp[2] <- chr
-      results_temp[1] <- as.character(gene_name)
-      results_temp[4] <- pvalues$num_variant
+      id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
+      id.phenotype.num.merge <- data.frame(id.phenotype.num)
+      id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
+      phenotype.id.match <- id.phenotype.num.merge$index
+      samplesize.num <- length(phenotype.id.match)
       
-      if(!use_SPA)
+      ## Extract the genotype matrix and variant information of the current trait
+      Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
+      MAC.in <- Matrix::colSums(Geno.num,na.rm = TRUE)
+      Missing_num.in <- Missing_num.sp(Geno.num)
+      MAF.in <- MAC.in/(2*(samplesize.num-Missing_num.in))
+      
+      if (geno_missing_imputation == "mean")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
-                          pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
-      }else
+        Geno.num <- na.replace.sp(Geno.num,m=2*MAF.in)
+      }
+      if (geno_missing_imputation == "minor")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        Geno.num <- na.replace.sp(Geno.num,is_NA_to_Zero=TRUE)
+        MAF.in <- MAC.in/(2*samplesize.num)
       }
       
-      results_enhancer_CAGE <- rbind(results_enhancer_CAGE,results_temp)
-    }
-    
-    if(!is.null(results_enhancer_CAGE))
-    {
-      if(!use_SPA)
+      ## number of traits in analysis
+      n_pheno <- obj_nullmodel_list[[num]]$n.pheno
+      
+      ## SPA status
+      if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
       {
-        colnames(results_enhancer_CAGE) <- colnames(results_enhancer_CAGE, do.NULL = FALSE, prefix = "col")
-        colnames(results_enhancer_CAGE)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results_enhancer_CAGE)[(dim(results_enhancer_CAGE)[2]-1):dim(results_enhancer_CAGE)[2]] <- c("ACAT-O","STAAR-O")
+        use_SPA <- obj_nullmodel_list[[num]]$use_SPA
       }else
       {
-        colnames(results_enhancer_CAGE) <- colnames(results_enhancer_CAGE, do.NULL = FALSE, prefix = "col")
-        colnames(results_enhancer_CAGE)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results_enhancer_CAGE)[dim(results_enhancer_CAGE)[2]] <- c("STAAR-B")
+        use_SPA <- FALSE
       }
       
-      results_list_enhancer_CAGE[[num]] <- results_enhancer_CAGE
+      pvalues <- 0
+      if(n_pheno == 1)
+      {
+        if(!use_SPA)
+        {
+          try(pvalues <- STAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+        }else
+        {
+          try(pvalues <- STAAR_Binary_SPA_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
+        }
+      }else
+      {
+        try(pvalues <- MultiSTAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+      }
+      
+      results_enhancer_CAGE <- c()
+      if(inherits(pvalues, "list"))
+      {
+        results_temp <- dfHancerCAGEVarGene.SNV[1, 1:4]
+        results_temp[3] <- "enhancer_CAGE"
+        results_temp[2] <- chr
+        results_temp[1] <- as.character(gene_name)
+        results_temp[4] <- pvalues$num_variant
+        
+        if(!use_SPA)
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
+                            pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
+        }else
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        }
+        
+        results_enhancer_CAGE <- rbind(results_enhancer_CAGE,results_temp)
+      }
+      
+      if(!is.null(results_enhancer_CAGE))
+      {
+        if(!use_SPA)
+        {
+          colnames(results_enhancer_CAGE) <- colnames(results_enhancer_CAGE, do.NULL = FALSE, prefix = "col")
+          colnames(results_enhancer_CAGE)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results_enhancer_CAGE)[(dim(results_enhancer_CAGE)[2]-1):dim(results_enhancer_CAGE)[2]] <- c("ACAT-O","STAAR-O")
+        }else
+        {
+          colnames(results_enhancer_CAGE) <- colnames(results_enhancer_CAGE, do.NULL = FALSE, prefix = "col")
+          colnames(results_enhancer_CAGE)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results_enhancer_CAGE)[dim(results_enhancer_CAGE)[2]] <- c("STAAR-B")
+        }
+        
+        results_list_enhancer_CAGE[[num]] <- results_enhancer_CAGE
+      }
     }
   }
   
@@ -1207,39 +1260,6 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
 
   seqSetFilter(genofile,variant.id=variant.is.in,sample.id=phenotype.id)
 
-  ## genotype id
-  id.genotype <- seqGetData(genofile,"sample.id")
-  # id.genotype.match <- rep(0,length(id.genotype))
-  
-  id.genotype.merge <- data.frame(id.genotype,index=seq(1,length(id.genotype)))
-  phenotype.id.merge <- data.frame(phenotype.id)
-  phenotype.id.merge <- dplyr::left_join(phenotype.id.merge,id.genotype.merge,by=c("phenotype.id"="id.genotype"))
-  id.genotype.match <- phenotype.id.merge$index
-  
-  ## Genotype
-  Geno <- NULL
-  if(length(seqGetData(genofile, "variant.id"))<rv_num_cutoff_max_prefilter)
-  {
-    Geno <- seqGetData(genofile, "$dosage")
-    Geno <- Geno[id.genotype.match,,drop=FALSE]
-  }
-  
-  ## impute missing
-  if(!is.null(dim(Geno)))
-  {
-    if(dim(Geno)[2]>0)
-    {
-      if(geno_missing_imputation=="mean")
-      {
-        Geno <- matrix_flip_mean(Geno)$Geno
-      }
-      if(geno_missing_imputation=="minor")
-      {
-        Geno <- matrix_flip_minor(Geno)$Geno
-      }
-    }
-  }
-  
   ## Annotation
   Anno.Int.PHRED.sub <- NULL
   Anno.Int.PHRED.sub.name <- NULL
@@ -1275,83 +1295,125 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
     }
   }
   
+  if(length(variant.is.in)>=1)
+  {
+    ## get AF, Missing rate
+    AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
+    REF_AF <- AF_AC_Missing$af
+    Missing_rate <- AF_AC_Missing$miss
+    variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
+    seqResetFilter(genofile)
+    
+    Genotype_sp <- Genotype_sp_extraction(genofile,variant.id=variant.is.in,
+                                          sample.id=phenotype.id,
+                                          REF_AF=REF_AF,variant_maf_cutoff_filter=variant_maf_cutoff_filter,
+                                          Missing_rate=Missing_rate,
+                                          rv_num_cutoff_max_prefilter=rv_num_cutoff_max_prefilter,
+                                          annotation_phred=Anno.Int.PHRED.sub)
+    Geno <- Genotype_sp$Geno
+    Anno.Int.PHRED.sub <- Genotype_sp$annotation_phred
+    rm(Genotype_sp)
+    gc()
+  } else
+  {
+    Geno <- NULL
+  }
+  
   results_list_enhancer_DHS <- rep(list(c()), length(obj_nullmodel_list))
   phenotype.id.merge <- data.frame(phenotype.id, index = seq(1, length(phenotype.id)))
   
-  for (num in 1:length(obj_nullmodel_list))
+  if(!is.null(Geno) & inherits(Geno, "dgCMatrix"))
   {
-    id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
-    id.phenotype.num.merge <- data.frame(id.phenotype.num)
-    id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
-    phenotype.id.match <- id.phenotype.num.merge$index
-    
-    Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
-    
-    ## number of traits in analysis
-    n_pheno <- obj_nullmodel_list[[num]]$n.pheno
-    
-    ## SPA status
-    if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
+    for (num in 1:length(obj_nullmodel_list))
     {
-      use_SPA <- obj_nullmodel_list[[num]]$use_SPA
-    }else
-    {
-      use_SPA <- FALSE
-    }
-    
-    pvalues <- 0
-    if(n_pheno == 1)
-    {
-      if(!use_SPA)
-      {
-        try(pvalues <- STAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-      }else
-      {
-        try(pvalues <- STAAR_Binary_SPA(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
-      }
-    }else
-    {
-      try(pvalues <- MultiSTAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-    }
-    
-    results_enhancer_DHS <- c()
-    if(inherits(pvalues, "list"))
-    {
-      results_temp <- dfHancerrOCRsVarGene.SNV[1, 1:4]
-      results_temp[3] <- "enhancer_DHS"
-      results_temp[2] <- chr
-      results_temp[1] <- as.character(gene_name)
-      results_temp[4] <- pvalues$num_variant
+      id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
+      id.phenotype.num.merge <- data.frame(id.phenotype.num)
+      id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
+      phenotype.id.match <- id.phenotype.num.merge$index
+      samplesize.num <- length(phenotype.id.match)
       
-      if(!use_SPA)
+      ## Extract the genotype matrix and variant information of the current trait
+      Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
+      MAC.in <- Matrix::colSums(Geno.num,na.rm = TRUE)
+      Missing_num.in <- Missing_num.sp(Geno.num)
+      MAF.in <- MAC.in/(2*(samplesize.num-Missing_num.in))
+      
+      if (geno_missing_imputation == "mean")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
-                          pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
-      }else
+        Geno.num <- na.replace.sp(Geno.num,m=2*MAF.in)
+      }
+      if (geno_missing_imputation == "minor")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        Geno.num <- na.replace.sp(Geno.num,is_NA_to_Zero=TRUE)
+        MAF.in <- MAC.in/(2*samplesize.num)
       }
       
-      results_enhancer_DHS <- rbind(results_enhancer_DHS,results_temp)
-    }
-    
-    if(!is.null(results_enhancer_DHS))
-    {
-      if(!use_SPA)
+      ## number of traits in analysis
+      n_pheno <- obj_nullmodel_list[[num]]$n.pheno
+      
+      ## SPA status
+      if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
       {
-        colnames(results_enhancer_DHS) <- colnames(results_enhancer_DHS, do.NULL = FALSE, prefix = "col")
-        colnames(results_enhancer_DHS)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results_enhancer_DHS)[(dim(results_enhancer_DHS)[2]-1):dim(results_enhancer_DHS)[2]] <- c("ACAT-O","STAAR-O")
+        use_SPA <- obj_nullmodel_list[[num]]$use_SPA
       }else
       {
-        colnames(results_enhancer_DHS) <- colnames(results_enhancer_DHS, do.NULL = FALSE, prefix = "col")
-        colnames(results_enhancer_DHS)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results_enhancer_DHS)[dim(results_enhancer_DHS)[2]] <- c("STAAR-B")
+        use_SPA <- FALSE
       }
       
-      results_list_enhancer_DHS[[num]] <- results_enhancer_DHS
+      pvalues <- 0
+      if(n_pheno == 1)
+      {
+        if(!use_SPA)
+        {
+          try(pvalues <- STAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+        }else
+        {
+          try(pvalues <- STAAR_Binary_SPA_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
+        }
+      }else
+      {
+        try(pvalues <- MultiSTAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+      }
+      
+      results_enhancer_DHS <- c()
+      if(inherits(pvalues, "list"))
+      {
+        results_temp <- dfHancerrOCRsVarGene.SNV[1, 1:4]
+        results_temp[3] <- "enhancer_DHS"
+        results_temp[2] <- chr
+        results_temp[1] <- as.character(gene_name)
+        results_temp[4] <- pvalues$num_variant
+        
+        if(!use_SPA)
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
+                            pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
+        }else
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        }
+        
+        results_enhancer_DHS <- rbind(results_enhancer_DHS,results_temp)
+      }
+      
+      if(!is.null(results_enhancer_DHS))
+      {
+        if(!use_SPA)
+        {
+          colnames(results_enhancer_DHS) <- colnames(results_enhancer_DHS, do.NULL = FALSE, prefix = "col")
+          colnames(results_enhancer_DHS)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results_enhancer_DHS)[(dim(results_enhancer_DHS)[2]-1):dim(results_enhancer_DHS)[2]] <- c("ACAT-O","STAAR-O")
+        }else
+        {
+          colnames(results_enhancer_DHS) <- colnames(results_enhancer_DHS, do.NULL = FALSE, prefix = "col")
+          colnames(results_enhancer_DHS)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results_enhancer_DHS)[dim(results_enhancer_DHS)[2]] <- c("STAAR-B")
+        }
+        
+        results_list_enhancer_DHS[[num]] <- results_enhancer_DHS
+      }
     }
   }
   
@@ -1395,41 +1457,15 @@ promoter_CAGE_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_li
   ### Gene
   is.in <- which(dfPromCAGEVarGene.SNV[,5]==gene_name)
   variant.is.in <- variant.id.SNV.PromCAGE[is.in]
+  
+  if(length(variant.is.in)==0)
+  {
+    results_list <- rep(list(c()), length(obj_nullmodel_list))
+    seqResetFilter(genofile)
+    return(results_list)
+  }
 
   seqSetFilter(genofile,variant.id=variant.is.in,sample.id=phenotype.id)
-
-  ## genotype id
-  id.genotype <- seqGetData(genofile,"sample.id")
-  # id.genotype.match <- rep(0,length(id.genotype))
-  
-  id.genotype.merge <- data.frame(id.genotype,index=seq(1,length(id.genotype)))
-  phenotype.id.merge <- data.frame(phenotype.id)
-  phenotype.id.merge <- dplyr::left_join(phenotype.id.merge,id.genotype.merge,by=c("phenotype.id"="id.genotype"))
-  id.genotype.match <- phenotype.id.merge$index
-  
-  ## Genotype
-  Geno <- NULL
-  if(length(seqGetData(genofile, "variant.id"))<rv_num_cutoff_max_prefilter)
-  {
-    Geno <- seqGetData(genofile, "$dosage")
-    Geno <- Geno[id.genotype.match,,drop=FALSE]
-  }
-  
-  ## impute missing
-  if(!is.null(dim(Geno)))
-  {
-    if(dim(Geno)[2]>0)
-    {
-      if(geno_missing_imputation=="mean")
-      {
-        Geno <- matrix_flip_mean(Geno)$Geno
-      }
-      if(geno_missing_imputation=="minor")
-      {
-        Geno <- matrix_flip_minor(Geno)$Geno
-      }
-    }
-  }
   
   ## Annotation
   Anno.Int.PHRED.sub <- NULL
@@ -1466,83 +1502,119 @@ promoter_CAGE_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_li
     }
   }
   
+  ## get AF, Missing rate
+  AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
+  REF_AF <- AF_AC_Missing$af
+  Missing_rate <- AF_AC_Missing$miss
+  variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
+  seqResetFilter(genofile)
+  
+  Genotype_sp <- Genotype_sp_extraction(genofile,variant.id=variant.is.in,
+                                        sample.id=phenotype.id,
+                                        REF_AF=REF_AF,variant_maf_cutoff_filter=variant_maf_cutoff_filter,
+                                        Missing_rate=Missing_rate,
+                                        rv_num_cutoff_max_prefilter=rv_num_cutoff_max_prefilter,
+                                        annotation_phred=Anno.Int.PHRED.sub)
+  Geno <- Genotype_sp$Geno
+  Anno.Int.PHRED.sub <- Genotype_sp$annotation_phred
+  rm(Genotype_sp)
+  gc()
+  
   results_list <- rep(list(c()), length(obj_nullmodel_list))
   phenotype.id.merge <- data.frame(phenotype.id, index = seq(1, length(phenotype.id)))
   
-  for (num in 1:length(obj_nullmodel_list))
+  if(!is.null(Geno) & inherits(Geno, "dgCMatrix"))
   {
-    id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
-    id.phenotype.num.merge <- data.frame(id.phenotype.num)
-    id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
-    phenotype.id.match <- id.phenotype.num.merge$index
-    
-    Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
-    
-    ## number of traits in analysis
-    n_pheno <- obj_nullmodel_list[[num]]$n.pheno
-    
-    ## SPA status
-    if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
+    for (num in 1:length(obj_nullmodel_list))
     {
-      use_SPA <- obj_nullmodel_list[[num]]$use_SPA
-    }else
-    {
-      use_SPA <- FALSE
-    }
-    
-    pvalues <- 0
-    if(n_pheno == 1)
-    {
-      if(!use_SPA)
-      {
-        try(pvalues <- STAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-      }else
-      {
-        try(pvalues <- STAAR_Binary_SPA(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
-      }
-    }else
-    {
-      try(pvalues <- MultiSTAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-    }
-    
-    results <- c()
-    if(inherits(pvalues, "list"))
-    {
-      results_temp <- dfPromCAGEVarGene.SNV[1,1:4]
-      results_temp[3] <- "promoter_CAGE"
-      results_temp[2] <- chr
-      results_temp[1] <- as.character(gene_name)
-      results_temp[4] <- pvalues$num_variant
+      id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
+      id.phenotype.num.merge <- data.frame(id.phenotype.num)
+      id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
+      phenotype.id.match <- id.phenotype.num.merge$index
+      samplesize.num <- length(phenotype.id.match)
       
-      if(!use_SPA)
+      ## Extract the genotype matrix and variant information of the current trait
+      Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
+      MAC.in <- Matrix::colSums(Geno.num,na.rm = TRUE)
+      Missing_num.in <- Missing_num.sp(Geno.num)
+      MAF.in <- MAC.in/(2*(samplesize.num-Missing_num.in))
+      
+      if (geno_missing_imputation == "mean")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
-                          pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
-      }else
+        Geno.num <- na.replace.sp(Geno.num,m=2*MAF.in)
+      }
+      if (geno_missing_imputation == "minor")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        Geno.num <- na.replace.sp(Geno.num,is_NA_to_Zero=TRUE)
+        MAF.in <- MAC.in/(2*samplesize.num)
       }
       
-      results <- rbind(results,results_temp)
-    }
-    
-    if(!is.null(results))
-    {
-      if(!use_SPA)
+      ## number of traits in analysis
+      n_pheno <- obj_nullmodel_list[[num]]$n.pheno
+      
+      ## SPA status
+      if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
       {
-        colnames(results) <- colnames(results, do.NULL = FALSE, prefix = "col")
-        colnames(results)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results)[(dim(results)[2]-1):dim(results)[2]] <- c("ACAT-O","STAAR-O")
+        use_SPA <- obj_nullmodel_list[[num]]$use_SPA
       }else
       {
-        colnames(results) <- colnames(results, do.NULL = FALSE, prefix = "col")
-        colnames(results)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results)[dim(results)[2]] <- c("STAAR-B")
+        use_SPA <- FALSE
       }
       
-      results_list[[num]] <- results
+      pvalues <- 0
+      if(n_pheno == 1)
+      {
+        if(!use_SPA)
+        {
+          try(pvalues <- STAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+        }else
+        {
+          try(pvalues <- STAAR_Binary_SPA_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
+        }
+      }else
+      {
+        try(pvalues <- MultiSTAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+      }
+      
+      results <- c()
+      if(inherits(pvalues, "list"))
+      {
+        results_temp <- dfPromCAGEVarGene.SNV[1,1:4]
+        results_temp[3] <- "promoter_CAGE"
+        results_temp[2] <- chr
+        results_temp[1] <- as.character(gene_name)
+        results_temp[4] <- pvalues$num_variant
+        
+        if(!use_SPA)
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
+                            pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
+        }else
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        }
+        
+        results <- rbind(results,results_temp)
+      }
+      
+      if(!is.null(results))
+      {
+        if(!use_SPA)
+        {
+          colnames(results) <- colnames(results, do.NULL = FALSE, prefix = "col")
+          colnames(results)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results)[(dim(results)[2]-1):dim(results)[2]] <- c("ACAT-O","STAAR-O")
+        }else
+        {
+          colnames(results) <- colnames(results, do.NULL = FALSE, prefix = "col")
+          colnames(results)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results)[dim(results)[2]] <- c("STAAR-B")
+        }
+        
+        results_list[[num]] <- results
+      }
     }
   }
   
@@ -1572,42 +1644,16 @@ promoter_DHS_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_lis
   ### Gene
   is.in <- which(dfPromrOCRsVarGene.SNV[,5]==gene_name)
   variant.is.in <- variant.id.SNV.PromrOCRs[is.in]
+  
+  if(length(variant.is.in)==0)
+  {
+    results_list <- rep(list(c()), length(obj_nullmodel_list))
+    seqResetFilter(genofile)
+    return(results_list)
+  }
 
   seqSetFilter(genofile,variant.id=variant.is.in,sample.id=phenotype.id)
 
-  ## genotype id
-  id.genotype <- seqGetData(genofile,"sample.id")
-  # id.genotype.match <- rep(0,length(id.genotype))
-  
-  id.genotype.merge <- data.frame(id.genotype,index=seq(1,length(id.genotype)))
-  phenotype.id.merge <- data.frame(phenotype.id)
-  phenotype.id.merge <- dplyr::left_join(phenotype.id.merge,id.genotype.merge,by=c("phenotype.id"="id.genotype"))
-  id.genotype.match <- phenotype.id.merge$index
-  
-  ## Genotype
-  Geno <- NULL
-  if(length(seqGetData(genofile, "variant.id"))<rv_num_cutoff_max_prefilter)
-  {
-    Geno <- seqGetData(genofile, "$dosage")
-    Geno <- Geno[id.genotype.match,,drop=FALSE]
-  }
-  
-  ## impute missing
-  if(!is.null(dim(Geno)))
-  {
-    if(dim(Geno)[2]>0)
-    {
-      if(geno_missing_imputation=="mean")
-      {
-        Geno <- matrix_flip_mean(Geno)$Geno
-      }
-      if(geno_missing_imputation=="minor")
-      {
-        Geno <- matrix_flip_minor(Geno)$Geno
-      }
-    }
-  }
-  
   ## Annotation
   Anno.Int.PHRED.sub <- NULL
   Anno.Int.PHRED.sub.name <- NULL
@@ -1643,84 +1689,120 @@ promoter_DHS_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_lis
     }
   }
   
+  ## get AF, Missing rate
+  AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
+  REF_AF <- AF_AC_Missing$af
+  Missing_rate <- AF_AC_Missing$miss
+  variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
+  seqResetFilter(genofile)
+  
+  Genotype_sp <- Genotype_sp_extraction(genofile,variant.id=variant.is.in,
+                                        sample.id=phenotype.id,
+                                        REF_AF=REF_AF,variant_maf_cutoff_filter=variant_maf_cutoff_filter,
+                                        Missing_rate=Missing_rate,
+                                        rv_num_cutoff_max_prefilter=rv_num_cutoff_max_prefilter,
+                                        annotation_phred=Anno.Int.PHRED.sub)
+  Geno <- Genotype_sp$Geno
+  Anno.Int.PHRED.sub <- Genotype_sp$annotation_phred
+  rm(Genotype_sp)
+  gc()
+  
   results_list <- rep(list(c()), length(obj_nullmodel_list))
   phenotype.id.merge <- data.frame(phenotype.id, index = seq(1, length(phenotype.id)))
   
-  for (num in 1:length(obj_nullmodel_list))
+  if(!is.null(Geno) & inherits(Geno, "dgCMatrix"))
   {
-    id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
-    id.phenotype.num.merge <- data.frame(id.phenotype.num)
-    id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
-    phenotype.id.match <- id.phenotype.num.merge$index
-    
-    Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
-    
-    ## number of traits in analysis
-    n_pheno <- obj_nullmodel_list[[num]]$n.pheno
-    
-    ## SPA status
-    if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
+    for (num in 1:length(obj_nullmodel_list))
     {
-      use_SPA <- obj_nullmodel_list[[num]]$use_SPA
-    }else
-    {
-      use_SPA <- FALSE
-    }
-    
-    pvalues <- 0
-    if(n_pheno == 1)
-    {
-      if(!use_SPA)
-      {
-        try(pvalues <- STAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-      }else
-      {
-        try(pvalues <- STAAR_Binary_SPA(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
-      }
-    }else
-    {
-      try(pvalues <- MultiSTAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-    }
-    
-    results <- c()
-    if(inherits(pvalues, "list"))
-    {
-      results_temp <- dfPromrOCRsVarGene.SNV[1,1:4]
-      results_temp[3] <- "promoter_DHS"
-      results_temp[2] <- chr
-      results_temp[1] <- as.character(gene_name)
-      results_temp[4] <- pvalues$num_variant
+      id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
+      id.phenotype.num.merge <- data.frame(id.phenotype.num)
+      id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
+      phenotype.id.match <- id.phenotype.num.merge$index
+      samplesize.num <- length(phenotype.id.match)
       
-      if(!use_SPA)
+      ## Extract the genotype matrix and variant information of the current trait
+      Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
+      MAC.in <- Matrix::colSums(Geno.num,na.rm = TRUE)
+      Missing_num.in <- Missing_num.sp(Geno.num)
+      MAF.in <- MAC.in/(2*(samplesize.num-Missing_num.in))
+      
+      if (geno_missing_imputation == "mean")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
-                          pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
-      }else
+        Geno.num <- na.replace.sp(Geno.num,m=2*MAF.in)
+      }
+      if (geno_missing_imputation == "minor")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        Geno.num <- na.replace.sp(Geno.num,is_NA_to_Zero=TRUE)
+        MAF.in <- MAC.in/(2*samplesize.num)
       }
       
-      results <- rbind(results,results_temp)
-    }
-    
-    
-    if(!is.null(results))
-    {
-      if(!use_SPA)
+      ## number of traits in analysis
+      n_pheno <- obj_nullmodel_list[[num]]$n.pheno
+      
+      ## SPA status
+      if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
       {
-        colnames(results) <- colnames(results, do.NULL = FALSE, prefix = "col")
-        colnames(results)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results)[(dim(results)[2]-1):dim(results)[2]] <- c("ACAT-O","STAAR-O")
+        use_SPA <- obj_nullmodel_list[[num]]$use_SPA
       }else
       {
-        colnames(results) <- colnames(results, do.NULL = FALSE, prefix = "col")
-        colnames(results)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results)[dim(results)[2]] <- c("STAAR-B")
+        use_SPA <- FALSE
       }
       
-      results_list[[num]] <- results
+      pvalues <- 0
+      if(n_pheno == 1)
+      {
+        if(!use_SPA)
+        {
+          try(pvalues <- STAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+        }else
+        {
+          try(pvalues <- STAAR_Binary_SPA_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
+        }
+      }else
+      {
+        try(pvalues <- MultiSTAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+      }
+      
+      results <- c()
+      if(inherits(pvalues, "list"))
+      {
+        results_temp <- dfPromrOCRsVarGene.SNV[1,1:4]
+        results_temp[3] <- "promoter_DHS"
+        results_temp[2] <- chr
+        results_temp[1] <- as.character(gene_name)
+        results_temp[4] <- pvalues$num_variant
+        
+        if(!use_SPA)
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
+                            pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
+        }else
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        }
+        
+        results <- rbind(results,results_temp)
+      }
+      
+      
+      if(!is.null(results))
+      {
+        if(!use_SPA)
+        {
+          colnames(results) <- colnames(results, do.NULL = FALSE, prefix = "col")
+          colnames(results)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results)[(dim(results)[2]-1):dim(results)[2]] <- c("ACAT-O","STAAR-O")
+        }else
+        {
+          colnames(results) <- colnames(results, do.NULL = FALSE, prefix = "col")
+          colnames(results)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results)[dim(results)[2]] <- c("STAAR-B")
+        }
+        
+        results_list[[num]] <- results
+      }
     }
   }
   
@@ -1750,41 +1832,15 @@ enhancer_CAGE_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_li
   ### Gene
   is.in <- which(dfHancerCAGEVarGene.SNV[,5]==gene_name)
   variant.is.in <- variant.id.SNV.HancerCAGE[is.in]
+  
+  if(length(variant.is.in)==0)
+  {
+    results_list <- rep(list(c()), length(obj_nullmodel_list))
+    seqResetFilter(genofile)
+    return(results_list)
+  }
 
   seqSetFilter(genofile,variant.id=variant.is.in,sample.id=phenotype.id)
-
-  ## genotype id
-  id.genotype <- seqGetData(genofile,"sample.id")
-  # id.genotype.match <- rep(0,length(id.genotype))
-  
-  id.genotype.merge <- data.frame(id.genotype,index=seq(1,length(id.genotype)))
-  phenotype.id.merge <- data.frame(phenotype.id)
-  phenotype.id.merge <- dplyr::left_join(phenotype.id.merge,id.genotype.merge,by=c("phenotype.id"="id.genotype"))
-  id.genotype.match <- phenotype.id.merge$index
-  
-  ## Genotype
-  Geno <- NULL
-  if(length(seqGetData(genofile, "variant.id"))<rv_num_cutoff_max_prefilter)
-  {
-    Geno <- seqGetData(genofile, "$dosage")
-    Geno <- Geno[id.genotype.match,,drop=FALSE]
-  }
-  
-  ## impute missing
-  if(!is.null(dim(Geno)))
-  {
-    if(dim(Geno)[2]>0)
-    {
-      if(geno_missing_imputation=="mean")
-      {
-        Geno <- matrix_flip_mean(Geno)$Geno
-      }
-      if(geno_missing_imputation=="minor")
-      {
-        Geno <- matrix_flip_minor(Geno)$Geno
-      }
-    }
-  }
   
   ## Annotation
   Anno.Int.PHRED.sub <- NULL
@@ -1821,83 +1877,119 @@ enhancer_CAGE_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_li
     }
   }
   
+  ## get AF, Missing rate
+  AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
+  REF_AF <- AF_AC_Missing$af
+  Missing_rate <- AF_AC_Missing$miss
+  variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
+  seqResetFilter(genofile)
+  
+  Genotype_sp <- Genotype_sp_extraction(genofile,variant.id=variant.is.in,
+                                        sample.id=phenotype.id,
+                                        REF_AF=REF_AF,variant_maf_cutoff_filter=variant_maf_cutoff_filter,
+                                        Missing_rate=Missing_rate,
+                                        rv_num_cutoff_max_prefilter=rv_num_cutoff_max_prefilter,
+                                        annotation_phred=Anno.Int.PHRED.sub)
+  Geno <- Genotype_sp$Geno
+  Anno.Int.PHRED.sub <- Genotype_sp$annotation_phred
+  rm(Genotype_sp)
+  gc()
+  
   results_list <- rep(list(c()), length(obj_nullmodel_list))
   phenotype.id.merge <- data.frame(phenotype.id, index = seq(1, length(phenotype.id)))
   
-  for (num in 1:length(obj_nullmodel_list))
+  if(!is.null(Geno) & inherits(Geno, "dgCMatrix"))
   {
-    id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
-    id.phenotype.num.merge <- data.frame(id.phenotype.num)
-    id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
-    phenotype.id.match <- id.phenotype.num.merge$index
-    
-    Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
-    
-    ## number of traits in analysis
-    n_pheno <- obj_nullmodel_list[[num]]$n.pheno
-    
-    ## SPA status
-    if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
+    for (num in 1:length(obj_nullmodel_list))
     {
-      use_SPA <- obj_nullmodel_list[[num]]$use_SPA
-    }else
-    {
-      use_SPA <- FALSE
-    }
-    
-    pvalues <- 0
-    if(n_pheno == 1)
-    {
-      if(!use_SPA)
-      {
-        try(pvalues <- STAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-      }else
-      {
-        try(pvalues <- STAAR_Binary_SPA(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
-      }
-    }else
-    {
-      try(pvalues <- MultiSTAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-    }
-    
-    results <- c()
-    if(inherits(pvalues, "list"))
-    {
-      results_temp <- dfHancerCAGEVarGene.SNV[1,1:4]
-      results_temp[3] <- "enhancer_CAGE"
-      results_temp[2] <- chr
-      results_temp[1] <- as.character(gene_name)
-      results_temp[4] <- pvalues$num_variant
+      id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
+      id.phenotype.num.merge <- data.frame(id.phenotype.num)
+      id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
+      phenotype.id.match <- id.phenotype.num.merge$index
+      samplesize.num <- length(phenotype.id.match)
       
-      if(!use_SPA)
+      ## Extract the genotype matrix and variant information of the current trait
+      Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
+      MAC.in <- Matrix::colSums(Geno.num,na.rm = TRUE)
+      Missing_num.in <- Missing_num.sp(Geno.num)
+      MAF.in <- MAC.in/(2*(samplesize.num-Missing_num.in))
+      
+      if (geno_missing_imputation == "mean")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
-                          pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
-      }else
+        Geno.num <- na.replace.sp(Geno.num,m=2*MAF.in)
+      }
+      if (geno_missing_imputation == "minor")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        Geno.num <- na.replace.sp(Geno.num,is_NA_to_Zero=TRUE)
+        MAF.in <- MAC.in/(2*samplesize.num)
       }
       
-      results <- rbind(results,results_temp)
-    }
-    
-    if(!is.null(results))
-    {
-      if(!use_SPA)
+      ## number of traits in analysis
+      n_pheno <- obj_nullmodel_list[[num]]$n.pheno
+      
+      ## SPA status
+      if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
       {
-        colnames(results) <- colnames(results, do.NULL = FALSE, prefix = "col")
-        colnames(results)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results)[(dim(results)[2]-1):dim(results)[2]] <- c("ACAT-O","STAAR-O")
+        use_SPA <- obj_nullmodel_list[[num]]$use_SPA
       }else
       {
-        colnames(results) <- colnames(results, do.NULL = FALSE, prefix = "col")
-        colnames(results)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results)[dim(results)[2]] <- c("STAAR-B")
+        use_SPA <- FALSE
       }
       
-      results_list[[num]] <- results
+      pvalues <- 0
+      if(n_pheno == 1)
+      {
+        if(!use_SPA)
+        {
+          try(pvalues <- STAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+        }else
+        {
+          try(pvalues <- STAAR_Binary_SPA_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
+        }
+      }else
+      {
+        try(pvalues <- MultiSTAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+      }
+      
+      results <- c()
+      if(inherits(pvalues, "list"))
+      {
+        results_temp <- dfHancerCAGEVarGene.SNV[1,1:4]
+        results_temp[3] <- "enhancer_CAGE"
+        results_temp[2] <- chr
+        results_temp[1] <- as.character(gene_name)
+        results_temp[4] <- pvalues$num_variant
+        
+        if(!use_SPA)
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
+                            pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
+        }else
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        }
+        
+        results <- rbind(results,results_temp)
+      }
+      
+      if(!is.null(results))
+      {
+        if(!use_SPA)
+        {
+          colnames(results) <- colnames(results, do.NULL = FALSE, prefix = "col")
+          colnames(results)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results)[(dim(results)[2]-1):dim(results)[2]] <- c("ACAT-O","STAAR-O")
+        }else
+        {
+          colnames(results) <- colnames(results, do.NULL = FALSE, prefix = "col")
+          colnames(results)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results)[dim(results)[2]] <- c("STAAR-B")
+        }
+        
+        results_list[[num]] <- results
+      }
     }
   }
   
@@ -1927,41 +2019,15 @@ enhancer_DHS_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_lis
   ### Gene
   is.in <- which(dfHancerrOCRsVarGene.SNV[,5]==gene_name)
   variant.is.in <- variant.id.SNV.HancerrOCRs[is.in]
+  
+  if(length(variant.is.in)==0)
+  {
+    results_list <- rep(list(c()), length(obj_nullmodel_list))
+    seqResetFilter(genofile)
+    return(results_list)
+  }
 
   seqSetFilter(genofile,variant.id=variant.is.in,sample.id=phenotype.id)
-
-  ## genotype id
-  id.genotype <- seqGetData(genofile,"sample.id")
-  # id.genotype.match <- rep(0,length(id.genotype))
-  
-  id.genotype.merge <- data.frame(id.genotype,index=seq(1,length(id.genotype)))
-  phenotype.id.merge <- data.frame(phenotype.id)
-  phenotype.id.merge <- dplyr::left_join(phenotype.id.merge,id.genotype.merge,by=c("phenotype.id"="id.genotype"))
-  id.genotype.match <- phenotype.id.merge$index
-  
-  ## Genotype
-  Geno <- NULL
-  if(length(seqGetData(genofile, "variant.id"))<rv_num_cutoff_max_prefilter)
-  {
-    Geno <- seqGetData(genofile, "$dosage")
-    Geno <- Geno[id.genotype.match,,drop=FALSE]
-  }
-  
-  ## impute missing
-  if(!is.null(dim(Geno)))
-  {
-    if(dim(Geno)[2]>0)
-    {
-      if(geno_missing_imputation=="mean")
-      {
-        Geno <- matrix_flip_mean(Geno)$Geno
-      }
-      if(geno_missing_imputation=="minor")
-      {
-        Geno <- matrix_flip_minor(Geno)$Geno
-      }
-    }
-  }
   
   ## Annotation
   Anno.Int.PHRED.sub <- NULL
@@ -1998,82 +2064,119 @@ enhancer_DHS_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_lis
     }
   }
   
+  ## get AF, Missing rate
+  AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
+  REF_AF <- AF_AC_Missing$af
+  Missing_rate <- AF_AC_Missing$miss
+  variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
+  seqResetFilter(genofile)
+  
+  Genotype_sp <- Genotype_sp_extraction(genofile,variant.id=variant.is.in,
+                                        sample.id=phenotype.id,
+                                        REF_AF=REF_AF,variant_maf_cutoff_filter=variant_maf_cutoff_filter,
+                                        Missing_rate=Missing_rate,
+                                        rv_num_cutoff_max_prefilter=rv_num_cutoff_max_prefilter,
+                                        annotation_phred=Anno.Int.PHRED.sub)
+  Geno <- Genotype_sp$Geno
+  Anno.Int.PHRED.sub <- Genotype_sp$annotation_phred
+  rm(Genotype_sp)
+  gc()
+  
   results_list <- rep(list(c()), length(obj_nullmodel_list))
   phenotype.id.merge <- data.frame(phenotype.id, index = seq(1, length(phenotype.id)))
   
-  for (num in 1:length(obj_nullmodel_list))
+  if(!is.null(Geno) & inherits(Geno, "dgCMatrix"))
   {
-    id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
-    id.phenotype.num.merge <- data.frame(id.phenotype.num)
-    id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
-    phenotype.id.match <- id.phenotype.num.merge$index
-    
-    Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
-    ## number of traits in analysis
-    n_pheno <- obj_nullmodel_list[[num]]$n.pheno
-    
-    ## SPA status
-    if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
+    for (num in 1:length(obj_nullmodel_list))
     {
-      use_SPA <- obj_nullmodel_list[[num]]$use_SPA
-    }else
-    {
-      use_SPA <- FALSE
-    }
-    
-    pvalues <- 0
-    if(n_pheno == 1)
-    {
-      if(!use_SPA)
-      {
-        try(pvalues <- STAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-      }else
-      {
-        try(pvalues <- STAAR_Binary_SPA(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
-      }
-    }else
-    {
-      try(pvalues <- MultiSTAAR(Geno.num,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
-    }
-    
-    results <- c()
-    if(inherits(pvalues, "list"))
-    {
-      results_temp <- dfHancerrOCRsVarGene.SNV[1,1:4]
-      results_temp[3] <- "enhancer_DHS"
-      results_temp[2] <- chr
-      results_temp[1] <- as.character(gene_name)
-      results_temp[4] <- pvalues$num_variant
+      id.phenotype.num <- as.character(obj_nullmodel_list[[num]]$id_include)
+      id.phenotype.num.merge <- data.frame(id.phenotype.num)
+      id.phenotype.num.merge <- dplyr::left_join(id.phenotype.num.merge,phenotype.id.merge,by = c("id.phenotype.num" = "phenotype.id"))
+      phenotype.id.match <- id.phenotype.num.merge$index
+      samplesize.num <- length(phenotype.id.match)
       
-      if(!use_SPA)
+      ## Extract the genotype matrix and variant information of the current trait
+      Geno.num <- Geno[phenotype.id.match, , drop = FALSE]
+      MAC.in <- Matrix::colSums(Geno.num,na.rm = TRUE)
+      Missing_num.in <- Missing_num.sp(Geno.num)
+      MAF.in <- MAC.in/(2*(samplesize.num-Missing_num.in))
+      
+      if (geno_missing_imputation == "mean")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
-                          pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
-      }else
+        Geno.num <- na.replace.sp(Geno.num,m=2*MAF.in)
+      }
+      if (geno_missing_imputation == "minor")
       {
-        results_temp <- c(results_temp,pvalues$cMAC,
-                          pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        Geno.num <- na.replace.sp(Geno.num,is_NA_to_Zero=TRUE)
+        MAF.in <- MAC.in/(2*samplesize.num)
       }
       
-      results <- rbind(results,results_temp)
-    }
-    
-    if(!is.null(results))
-    {
-      if(!use_SPA)
+      ## number of traits in analysis
+      n_pheno <- obj_nullmodel_list[[num]]$n.pheno
+      
+      ## SPA status
+      if(!is.null(obj_nullmodel_list[[num]]$use_SPA))
       {
-        colnames(results) <- colnames(results, do.NULL = FALSE, prefix = "col")
-        colnames(results)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results)[(dim(results)[2]-1):dim(results)[2]] <- c("ACAT-O","STAAR-O")
+        use_SPA <- obj_nullmodel_list[[num]]$use_SPA
       }else
       {
-        colnames(results) <- colnames(results, do.NULL = FALSE, prefix = "col")
-        colnames(results)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
-        colnames(results)[dim(results)[2]] <- c("STAAR-B")
+        use_SPA <- FALSE
       }
       
-      results_list[[num]] <- results
+      pvalues <- 0
+      if(n_pheno == 1)
+      {
+        if(!use_SPA)
+        {
+          try(pvalues <- STAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+        }else
+        {
+          try(pvalues <- STAAR_Binary_SPA_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max,SPA_p_filter=SPA_p_filter,p_filter_cutoff=p_filter_cutoff),silent=silent)
+        }
+      }else
+      {
+        try(pvalues <- MultiSTAAR_sp(Geno.num,MAF.in,obj_nullmodel_list[[num]],Anno.Int.PHRED.sub,rare_maf_cutoff=rare_maf_cutoff,rv_num_cutoff=rv_num_cutoff,rv_num_cutoff_max=rv_num_cutoff_max),silent=silent)
+      }
+      
+      results <- c()
+      if(inherits(pvalues, "list"))
+      {
+        results_temp <- dfHancerrOCRsVarGene.SNV[1,1:4]
+        results_temp[3] <- "enhancer_DHS"
+        results_temp[2] <- chr
+        results_temp[1] <- as.character(gene_name)
+        results_temp[4] <- pvalues$num_variant
+        
+        if(!use_SPA)
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,pvalues$results_STAAR_S_1_25,pvalues$results_STAAR_S_1_1,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_A_1_25,
+                            pvalues$results_STAAR_A_1_1,pvalues$results_ACAT_O,pvalues$results_STAAR_O)
+        }else
+        {
+          results_temp <- c(results_temp,pvalues$cMAC,
+                            pvalues$results_STAAR_B_1_25,pvalues$results_STAAR_B_1_1,pvalues$results_STAAR_B)
+        }
+        
+        results <- rbind(results,results_temp)
+      }
+      
+      if(!is.null(results))
+      {
+        if(!use_SPA)
+        {
+          colnames(results) <- colnames(results, do.NULL = FALSE, prefix = "col")
+          colnames(results)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results)[(dim(results)[2]-1):dim(results)[2]] <- c("ACAT-O","STAAR-O")
+        }else
+        {
+          colnames(results) <- colnames(results, do.NULL = FALSE, prefix = "col")
+          colnames(results)[1:5] <- c("Gene name","Chr","Category","#SNV","cMAC")
+          colnames(results)[dim(results)[2]] <- c("STAAR-B")
+        }
+        
+        results_list[[num]] <- results
+      }
     }
   }
   
