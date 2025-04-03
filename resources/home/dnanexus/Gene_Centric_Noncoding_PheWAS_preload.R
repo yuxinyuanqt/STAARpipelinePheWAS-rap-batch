@@ -239,6 +239,8 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
     AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
     REF_AF <- AF_AC_Missing$af
     Missing_rate <- AF_AC_Missing$miss
+    ## variant id
+    variant.is.in <- seqGetData(genofile, "variant.id")
     variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
     seqResetFilter(genofile)
     
@@ -434,6 +436,8 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
     AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
     REF_AF <- AF_AC_Missing$af
     Missing_rate <- AF_AC_Missing$miss
+    ## variant id
+    variant.is.in <- seqGetData(genofile, "variant.id")
     variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
     seqResetFilter(genofile)
     
@@ -628,6 +632,8 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
     AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
     REF_AF <- AF_AC_Missing$af
     Missing_rate <- AF_AC_Missing$miss
+    ## variant id
+    variant.is.in <- seqGetData(genofile, "variant.id")
     variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
     seqResetFilter(genofile)
     
@@ -796,6 +802,8 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
     AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
     REF_AF <- AF_AC_Missing$af
     Missing_rate <- AF_AC_Missing$miss
+    ## variant id
+    variant.is.in <- seqGetData(genofile, "variant.id")
     variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
     seqResetFilter(genofile)
     
@@ -965,6 +973,8 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
     AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
     REF_AF <- AF_AC_Missing$af
     Missing_rate <- AF_AC_Missing$miss
+    ## variant id
+    variant.is.in <- seqGetData(genofile, "variant.id")
     variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
     seqResetFilter(genofile)
     
@@ -1133,6 +1143,8 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
     AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
     REF_AF <- AF_AC_Missing$af
     Missing_rate <- AF_AC_Missing$miss
+    ## variant id
+    variant.is.in <- seqGetData(genofile, "variant.id")
     variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
     seqResetFilter(genofile)
     
@@ -1301,6 +1313,8 @@ noncoding_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_list,
     AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
     REF_AF <- AF_AC_Missing$af
     Missing_rate <- AF_AC_Missing$miss
+    ## variant id
+    variant.is.in <- seqGetData(genofile, "variant.id")
     variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
     seqResetFilter(genofile)
     
@@ -1506,6 +1520,8 @@ promoter_CAGE_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_li
   AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
   REF_AF <- AF_AC_Missing$af
   Missing_rate <- AF_AC_Missing$miss
+  ## variant id
+  variant.is.in <- seqGetData(genofile, "variant.id")
   variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
   seqResetFilter(genofile)
   
@@ -1693,6 +1709,8 @@ promoter_DHS_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_lis
   AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
   REF_AF <- AF_AC_Missing$af
   Missing_rate <- AF_AC_Missing$miss
+  ## variant id
+  variant.is.in <- seqGetData(genofile, "variant.id")
   variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
   seqResetFilter(genofile)
   
@@ -1881,6 +1899,8 @@ enhancer_CAGE_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_li
   AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
   REF_AF <- AF_AC_Missing$af
   Missing_rate <- AF_AC_Missing$miss
+  ## variant id
+  variant.is.in <- seqGetData(genofile, "variant.id")
   variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
   seqResetFilter(genofile)
   
@@ -2068,6 +2088,8 @@ enhancer_DHS_PheWAS_preload <- function(chr,gene_name,genofile,obj_nullmodel_lis
   AF_AC_Missing <- seqGetAF_AC_Missing(genofile,minor=FALSE,parallel=FALSE)
   REF_AF <- AF_AC_Missing$af
   Missing_rate <- AF_AC_Missing$miss
+  ## variant id
+  variant.is.in <- seqGetData(genofile, "variant.id")
   variant_maf_cutoff_filter <- ifelse(rare_maf_cutoff<=0.01,0.05,1)
   seqResetFilter(genofile)
   

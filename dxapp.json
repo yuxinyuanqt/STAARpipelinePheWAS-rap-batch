@@ -207,6 +207,14 @@
       "class": "string",
       "optional": true,
       "default": "CADD,LINSIGHT,FATHMM.XF,aPC.EpigeneticActive,aPC.EpigeneticRepressed,aPC.EpigeneticTranscription,aPC.Conservation,aPC.LocalDiversity,aPC.Mappability,aPC.TF,aPC.Protein"
+    },
+    {
+      "name": "p_filter_cutoff",
+      "label": "Threshold for p-value recalculation using the SPA method in single variant analysis (\"Single\")",
+      "help": "This parameter applies only to imbalanced case-control settings in single variant analysis. Variants with a score-test-based p-value smaller than the specified threshold will undergo p-value recalculation using the SPA method. If not specified, a default threshold of 0.01 will be used.",
+      "class": "float",
+      "optional": true,
+      "default": 0.01
     }
   ],
   "outputSpec": [
