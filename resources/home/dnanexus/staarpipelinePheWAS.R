@@ -953,7 +953,7 @@ if(test.type == "Null") {
   cat("\tChannel name of the annotations in the AGDS file:", Annotation_dir, "\n")
   cat("\tUse annotations as weights or not:", Use_annotation_weights, "\n")
   cat("\tAnnotations used in STAAR:", Annotation_name, "\n")
-  rm(list=setdiff(ls(), c("outfile", "obj_nullmodel_list", "agds.file", "min.mac", "QC_label", "variant_type", "geno_missing_imputation", "user_cores", "arrayid"))); gc()
+  rm(list=setdiff(ls(), c("outfile", "obj_nullmodel_list", "agds.file", "min.mac", "QC_label", "variant_type", "geno_missing_imputation", "user_cores", "arrayid","p_filter_cutoff"))); gc()
 
   genofile <- seqOpen(agds.file)
 
