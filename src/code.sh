@@ -44,6 +44,7 @@ main() {
     echo "Value of use_annotation_weights: '$use_annotation_weights'"
     echo "Value of annotation_name: '$annotation_name'"
     echo "Value of p_filter_cutoff: '$p_filter_cutoff'"
+    echo "Value of subset_variants_num: '$subset_variants_num'"
 
     # The following line(s) use the dx command-line tool to download your file
     # inputs to the local file system using variable names for the filenames. To
@@ -102,8 +103,8 @@ main() {
     random_time_slope="NO_RANDOM_TIME_SLOPE"
     fi
 
-    echo "Rscript --vanilla staarpipelinePheWAS.R $outfile $test_type $pheno_file2 $grm_file2 $nullobj_file2 $agds_file2 $annotation_name_catalog_file2 $phenotype $pheno_id $covariates $het_vars $random_time_slope $user_cores $arrayid $min_mac $max_maf $min_rv_num $max_rv_num $max_rv_num_prefilter $sliding_window_length $qc_label_dir $variant_type $geno_missing_imputation $annotation_dir $use_annotation_weights $annotation_name $p_filter_cutoff"
-    dx-docker run -v /home/dnanexus/:/home/dnanexus/ -w /home/dnanexus/ yuxinyuan/staarpipeline:v0.9.9 Rscript --vanilla staarpipelinePheWAS.R $outfile $test_type $pheno_file2 $grm_file2 $nullobj_file2 $agds_file2 $annotation_name_catalog_file2 $phenotype $pheno_id $covariates $het_vars $random_time_slope $user_cores $arrayid $min_mac $max_maf $min_rv_num $max_rv_num $max_rv_num_prefilter $sliding_window_length $qc_label_dir $variant_type $geno_missing_imputation $annotation_dir $use_annotation_weights $annotation_name $p_filter_cutoff
+    echo "Rscript --vanilla staarpipelinePheWAS.R $outfile $test_type $pheno_file2 $grm_file2 $nullobj_file2 $agds_file2 $annotation_name_catalog_file2 $phenotype $pheno_id $covariates $het_vars $random_time_slope $user_cores $arrayid $min_mac $max_maf $min_rv_num $max_rv_num $max_rv_num_prefilter $sliding_window_length $qc_label_dir $variant_type $geno_missing_imputation $annotation_dir $use_annotation_weights $annotation_name $p_filter_cutoff $subset_variants_num"
+    dx-docker run -v /home/dnanexus/:/home/dnanexus/ -w /home/dnanexus/ yuxinyuan/staarpipeline:v0.9.9 Rscript --vanilla staarpipelinePheWAS.R $outfile $test_type $pheno_file2 $grm_file2 $nullobj_file2 $agds_file2 $annotation_name_catalog_file2 $phenotype $pheno_id $covariates $het_vars $random_time_slope $user_cores $arrayid $min_mac $max_maf $min_rv_num $max_rv_num $max_rv_num_prefilter $sliding_window_length $qc_label_dir $variant_type $geno_missing_imputation $annotation_dir $use_annotation_weights $annotation_name $p_filter_cutoff $subset_variants_num
     mkdir -p out/results
     mv ${outfile}.Rdata out/results
     dx-upload-all-outputs
