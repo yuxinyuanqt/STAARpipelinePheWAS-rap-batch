@@ -27,7 +27,8 @@ geno_missing_imputation <- args[23]
 Annotation_dir <- args[24]
 Use_annotation_weights <- args[25]
 Annotation_name <- args[26]
-p_filter_cutoff <- args[27]
+p_filter_cutoff <- as.numeric(args[27])
+subset_variants_num <- as.numeric(args[28])
 
 test.type.vals <- c("Null", "Single", "Gene_Centric_Coding", "Gene_Centric_Coding_incl_ptv", "Gene_Centric_Noncoding", "ncRNA", "Sliding_Window", "SCANG")
 if(!test.type %in% test.type.vals) stop("Error: test.type must be Null, Single, Gene_Centric_Coding, Gene_Centric_Coding_incl_ptv, Gene_Centric_Noncoding, ncRNA, Sliding_Window, or SCANG")
@@ -56,6 +57,7 @@ if(test.type == "Null") {
   cat("\tThe specific array id used for analysis:", arrayid, "\n")
   cat("\tMinimum minor allele count to be included for single variant test:", min.mac, "\n")
   cat("Threshold for p-value recalculation using the SPA method in single variant analysis:", p_filter_cutoff, "\n")
+  cat("The number of variants to run per subset for each time in single variant analysis:", subset_variants_num, "\n")
   cat("\tMaximum minor allele frequency to be included for variant-set test:", max.maf, "\n")
   cat("\tMinimum number of variants of analyzing a given variant-set:", min.rv.num, "\n")
   cat("\tMaximum number of variants of analyzing a given variant-set:", max.rv.num, "\n")
@@ -79,6 +81,7 @@ if(test.type == "Null") {
   cat("\tThe specific array id used for analysis:", arrayid, "\n")
   cat("Minimum minor allele count to be included for single variant test:", min.mac, "\n")
   cat("Threshold for p-value recalculation using the SPA method in single variant analysis:", p_filter_cutoff, "\n")
+  cat("The number of variants to run per subset for each time in single variant analysis:", subset_variants_num, "\n")
   cat("Maximum minor allele frequency to be included for variant-set test:", max.maf, "\n")
   cat("\tMinimum number of variants of analyzing a given variant-set:", min.rv.num, "\n")
   cat("\tMaximum number of variants of analyzing a given variant-set:", max.rv.num, "\n")
@@ -198,7 +201,7 @@ if(test.type == "Null") {
   genofile <- seqOpen(agds.file)
 
   ## gene number in job
-  gene_num_in_array <- 400
+  gene_num_in_array <- 120
   group.num.allchr <- ceiling(table(genes_info[,2])/gene_num_in_array)
   sum(group.num.allchr)
   ## Chr
@@ -292,7 +295,7 @@ if(test.type == "Null") {
   genofile <- seqOpen(agds.file)
 
   ## gene number in job
-  gene_num_in_array <- 400
+  gene_num_in_array <- 120
   group.num.allchr <- ceiling(table(genes_info[,2])/gene_num_in_array)
   sum(group.num.allchr)
   ## Chr
@@ -953,7 +956,7 @@ if(test.type == "Null") {
   cat("\tChannel name of the annotations in the AGDS file:", Annotation_dir, "\n")
   cat("\tUse annotations as weights or not:", Use_annotation_weights, "\n")
   cat("\tAnnotations used in STAAR:", Annotation_name, "\n")
-  rm(list=setdiff(ls(), c("outfile", "obj_nullmodel_list", "agds.file", "min.mac", "QC_label", "variant_type", "geno_missing_imputation", "user_cores", "arrayid","p_filter_cutoff"))); gc()
+  rm(list=setdiff(ls(), c("outfile", "obj_nullmodel_list", "agds.file", "min.mac", "QC_label", "variant_type", "geno_missing_imputation", "user_cores", "arrayid","p_filter_cutoff","subset_variants_num"))); gc()
 
   genofile <- seqOpen(agds.file)
 
@@ -1000,8 +1003,6 @@ if(test.type == "Null") {
                                               QC_label=QC_label,variant_type=variant_type,geno_missing_imputation=geno_missing_imputation,p_filter_cutoff=p_filter_cutoff))
     return(list(index=kk,results=results))
   }
-  
-  subset_variants_num <- 5e3
   
   retry_mclapply <- function(sub_seq_id, user_cores, max_iter = 10) 
   {
