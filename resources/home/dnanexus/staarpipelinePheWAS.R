@@ -983,8 +983,8 @@ if(test.type == "Null") {
   jobs_num <- as.data.frame(jobs_num)
 
   ## start_loc and end_loc
-  start_loc <- (arrayid-1)*10e6 + jobs_num$start_loc[chr]
-  end_loc <- start_loc + 10e6 - 1
+  start_loc <- (arrayid-1)*7.5e6 + jobs_num$start_loc[chr]
+  end_loc <- start_loc + 7.5e6 - 1
   end_loc <- min(end_loc,jobs_num$end_loc[chr])
 
   ## sub-sequence num

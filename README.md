@@ -23,7 +23,7 @@ To acquire the staarpipelinePheWAS applet, you will need to compile this applet 
 1. Clone this github repo to some directory:
 
 ```commandline
-git clone https://github.com/li-lab-genetics/staarpipelinePheWAS-rap-batch.git
+git clone https://github.com/yuxinyuanqt/STAARpipelinePheWAS-rap-batch.git
 ```
 
 This will create a folder named staarpipelinePheWAS-rap-batch, you can then:
@@ -31,7 +31,7 @@ This will create a folder named staarpipelinePheWAS-rap-batch, you can then:
 2. Compile the source code:
 
 ```commandline
-dx build -f staarpipelinePheWAS-rap-batch
+dx build -f STAARpipelinePheWAS-rap-batch
 ```
 
 the `-f` flag just tells DNANexus to overwrite older versions of the applet within the same project if it is already there.

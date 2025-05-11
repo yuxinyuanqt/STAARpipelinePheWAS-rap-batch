@@ -215,6 +215,14 @@
       "class": "float",
       "optional": true,
       "default": 0.01
+    },
+    {
+      "name": "subset_variants_num",
+      "label": "The number of variants to run per subset for each time in single variant analysis (\"Single\")",
+      "help": "The number of variants to run per subset for each time in single variant analysis. If not specified, 5000 will be used as the default.",
+      "class": "int",
+      "optional": true,
+      "default": 5000
     }
   ],
   "outputSpec": [
