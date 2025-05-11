@@ -104,7 +104,7 @@ main() {
     fi
 
     echo "Rscript --vanilla staarpipelinePheWAS.R $outfile $test_type $pheno_file2 $grm_file2 $nullobj_file2 $agds_file2 $annotation_name_catalog_file2 $phenotype $pheno_id $covariates $het_vars $random_time_slope $user_cores $arrayid $min_mac $max_maf $min_rv_num $max_rv_num $max_rv_num_prefilter $sliding_window_length $qc_label_dir $variant_type $geno_missing_imputation $annotation_dir $use_annotation_weights $annotation_name $p_filter_cutoff $subset_variants_num"
-    dx-docker run -v /home/dnanexus/:/home/dnanexus/ -w /home/dnanexus/ zilinli/staarpipeline:v0.9.9 Rscript --vanilla staarpipelinePheWAS.R $outfile $test_type $pheno_file2 $grm_file2 $nullobj_file2 $agds_file2 $annotation_name_catalog_file2 $phenotype $pheno_id $covariates $het_vars $random_time_slope $user_cores $arrayid $min_mac $max_maf $min_rv_num $max_rv_num $max_rv_num_prefilter $sliding_window_length $qc_label_dir $variant_type $geno_missing_imputation $annotation_dir $use_annotation_weights $annotation_name $p_filter_cutoff $subset_variants_num
+    dx-docker run -v /home/dnanexus/:/home/dnanexus/ -w /home/dnanexus/ zilinli/staarpipeline:0.9.9 Rscript --vanilla staarpipelinePheWAS.R $outfile $test_type $pheno_file2 $grm_file2 $nullobj_file2 $agds_file2 $annotation_name_catalog_file2 $phenotype $pheno_id $covariates $het_vars $random_time_slope $user_cores $arrayid $min_mac $max_maf $min_rv_num $max_rv_num $max_rv_num_prefilter $sliding_window_length $qc_label_dir $variant_type $geno_missing_imputation $annotation_dir $use_annotation_weights $annotation_name $p_filter_cutoff $subset_variants_num
     mkdir -p out/results
     mv ${outfile}.Rdata out/results
     dx-upload-all-outputs
